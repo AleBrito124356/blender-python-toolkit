@@ -1,0 +1,38 @@
+# Render presets consumed by scripts/render_presets.py
+#
+# Each top-level key is a preset name. Values map directly onto Blender
+# render settings. `resolution` is [width, height] in pixels. `engine` is
+# "eevee" (fast, headless-safe) or "cycles" (opt-in). `view_transform` may be
+# "auto" (AgX on Blender 4.0+, Filmic before) or an explicit transform name.
+# `format` is any Blender image format id: PNG, JPEG, OPEN_EXR, TIFF, WEBP.
+
+# Fast look-dev pass: half-ish resolution, low samples, quick to iterate.
+preview:
+  resolution: [960, 540]
+  percentage: 100
+  samples: 16
+  engine: eevee
+  view_transform: auto
+  format: PNG
+  film_transparent: false
+
+# Square social export at 1:1 with a clean sample count.
+social:
+  resolution: [1080, 1080]
+  percentage: 100
+  samples: 64
+  engine: eevee
+  view_transform: auto
+  format: PNG
+  film_transparent: true
+
+# High-resolution deliverable. Uses more samples; switch engine to cycles
+# on the command line if you need path-traced accuracy for this one.
+print:
+  resolution: [3840, 2160]
+  percentage: 100
+  samples: 256
+  engine: eevee
+  view_transform: auto
+  format: PNG
+  film_transparent: false

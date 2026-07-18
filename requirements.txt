@@ -1,0 +1,14 @@
+# Runtime dependencies for blender-python-toolkit.
+#
+# The scripts run inside Blender and use `bpy` and `mathutils`, which ship
+# with the Blender executable - you do NOT pip-install those to run the tools.
+# The only external dependency is PyYAML, used by scripts/render_presets.py.
+# render_presets.py also falls back to a small built-in parser when PyYAML is
+# not present in Blender's bundled Python, so this is optional-but-recommended.
+
+PyYAML>=6.0
+
+# Optional: install Blender as a Python module to run scripts without the
+# Blender executable (requires the matching CPython, e.g. 3.11 for Blender 4.x).
+# Uncomment if you want `python scripts/...` to work standalone.
+# bpy>=4.0.0

@@ -1,0 +1,28 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+
+# Render outputs and logs
+out/
+results/
+logs/
+*.log
+
+# Generated Blender artifacts (the repo does not ship any .blend files)
+*.blend
+*.blend1
+*.blend2
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
