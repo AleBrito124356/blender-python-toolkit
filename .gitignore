@@ -26,3 +26,8 @@ logs/
 Thumbs.db
 .idea/
 .vscode/
+
+# Packaging
+*.egg-info/
+build/
+dist/

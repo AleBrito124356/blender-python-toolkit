@@ -1,10 +1,20 @@
-# Render presets consumed by scripts/render_presets.py
+# Render presets consumed by scripts/render_presets.py (bpt presets ...)
 #
-# Each top-level key is a preset name. Values map directly onto Blender
-# render settings. `resolution` is [width, height] in pixels. `engine` is
-# "eevee" (fast, headless-safe) or "cycles" (opt-in). `view_transform` may be
-# "auto" (AgX on Blender 4.0+, Filmic before) or an explicit transform name.
-# `format` is any Blender image format id: PNG, JPEG, OPEN_EXR, TIFF, WEBP.
+# Each top-level key is a preset name. Allowed keys (anything else is rejected
+# with an error, so typos cannot silently do nothing):
+#   resolution        [width, height] in pixels (integers >= 4)
+#   percentage        resolution percentage, 1-1000 (default 100)
+#   samples           render samples, integer >= 1
+#   engine            "eevee" (fast, headless-safe) or "cycles"
+#   device            "gpu" (falls back to CPU) or "cpu"; Cycles only
+#   view_transform    "auto" (AgX on Blender 4.0+, Filmic before) or a name
+#   look              optional look name, e.g. "AgX - Punchy"
+#   format            PNG, JPEG, OPEN_EXR, OPEN_EXR_MULTILAYER, TIFF, WEBP,
+#                     BMP, TARGA, AVIF, HDR, JPEG2000; the output file
+#                     extension follows it
+#   film_transparent  true / false
+# Only this two-level shape is needed, so stock Blender (no PyYAML) reads it
+# with the built-in parser.
 
 # Fast look-dev pass: half-ish resolution, low samples, quick to iterate.
 preview:

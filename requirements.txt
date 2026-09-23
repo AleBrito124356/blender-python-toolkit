@@ -1,14 +1,18 @@
-# Runtime dependencies for blender-python-toolkit.
+# Development / test dependencies for your *system* Python (not Blender's).
 #
-# The scripts run inside Blender and use `bpy` and `mathutils`, which ship
-# with the Blender executable - you do NOT pip-install those to run the tools.
-# The only external dependency is PyYAML, used by scripts/render_presets.py.
-# render_presets.py also falls back to a small built-in parser when PyYAML is
-# not present in Blender's bundled Python, so this is optional-but-recommended.
+# The toolkit scripts run inside Blender and only need what Blender bundles
+# (bpy, mathutils, numpy). Nothing here is installed into Blender:
+#
+#   python -m venv .venv
+#   .venv/Scripts/python -m pip install -r requirements.txt   # Windows
+#   .venv/bin/python -m pip install -r requirements.txt       # macOS / Linux
+#   pip install -e .                                          # adds the `bpt` command
+#
+# PyYAML is used by the unit tests to check the built-in preset parser
+# against the real thing. render_presets.py does NOT need it: without PyYAML
+# in Blender's Python it uses its own parser. To give Blender PyYAML anyway,
+# run `bpt doctor`, which prints the exact "<blender python> -m pip install
+# pyyaml" command for your install.
 
+pytest>=7
 PyYAML>=6.0
-
-# Optional: install Blender as a Python module to run scripts without the
-# Blender executable (requires the matching CPython, e.g. 3.11 for Blender 4.x).
-# Uncomment if you want `python scripts/...` to work standalone.
-# bpy>=4.0.0
