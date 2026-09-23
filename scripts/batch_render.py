@@ -1,24 +1,33 @@
-"""Batch-render every .blend in a folder with per-file CLI overrides.
+"""Batch-render every .blend in a folder, with overrides, QA and a CI-ready exit code.
 
-Opens each .blend, optionally overrides resolution / samples / engine, renders
-a still (or the full animation), and writes an output image named after the
-source file. Each file is wrapped in try/except so one broken .blend cannot
-kill the whole batch; a summary table is printed at the end.
+Opens each .blend, optionally overrides engine / resolution / samples, forces
+a still-image output format (safe on Blender 5 files saved with video output),
+renders a still (or the frame range), checks the result with the QA module and
+writes ``summary.json`` + ``summary.csv`` next to the renders. Each file is
+isolated in its own try/except, so one corrupt .blend never stops the batch.
 
-Run headless:
+Exit code: 0 when every file rendered, 1 when any file errored (or failed QA
+with ``--qa-strict``). Files without a camera are SKIPPED and only count as a
+failure with ``--strict``.
 
-    blender --background --python scripts/batch_render.py -- --input scenes --output out/batch
-    blender --background --python scripts/batch_render.py -- --input scenes --engine eevee --resolution 1920x1080 --samples 64
+Run headless (``--python-exit-code 1`` makes Python errors fail the process):
+
+    blender --background --factory-startup --python-exit-code 1 \\
+        --python scripts/batch_render.py -- --input scenes --output out/batch
 
 Arguments (after the "--" separator):
     --input DIR        Folder to scan for .blend files (required).
-    --output DIR       Where to write renders (default out/batch).
-    --engine NAME      Override engine: eevee or cycles (default: keep file's).
-    --resolution WxH   Override resolution (default: keep file's).
-    --samples N        Override sample count (default: keep file's).
-    --format FMT       Image format id, e.g. PNG, JPEG, OPEN_EXR (default PNG).
+    --output DIR       Where to write renders and the summary (default out/batch).
+    --engine NAME      Override engine: eevee or cycles (default: keep the file's).
+    --device NAME      Cycles device: gpu (default, falls back to CPU) or cpu.
+    --resolution WxH   Override resolution (default: keep the file's).
+    --samples N        Override sample count (default: keep the file's).
+    --format FMT       Still image format id: PNG, JPEG, OPEN_EXR, TIFF, WEBP... (default PNG).
     --animation        Render the full frame range instead of a single still.
     --recursive        Recurse into subfolders.
+    --strict           Count SKIPPED files (no camera) as failures.
+    --no-qa            Skip the per-file QA report.
+    --qa-strict        Count files whose QA report fails as failures (status QA_FAILED).
 """
 
 from __future__ import annotations
@@ -28,147 +37,172 @@ import glob
 import os
 import sys
 import time
+import traceback
 
 import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib.common import (  # noqa: E402
     ensure_dir,
-    set_engine,
-    set_samples,
     get_argv_after_dashes,
+    positive_int,
+    resolution_type,
+    set_engine,
+    set_image_output,
+    set_samples,
+)
+from lib.core import (  # noqa: E402
+    IMAGE_FORMAT_EXTENSIONS,
+    batch_exit_code,
+    format_batch_table,
+    image_extension,
+    write_batch_summary,
 )
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="batch_render.py",
         description="Render every .blend in a folder with optional overrides.",
     )
     parser.add_argument("--input", required=True, help="Folder of .blend files.")
     parser.add_argument("--output", default=os.path.join("out", "batch"), help="Output folder.")
-    parser.add_argument("--engine", default=None, help="Override engine: eevee or cycles.")
-    parser.add_argument("--resolution", default=None, help="Override resolution WxH.")
-    parser.add_argument("--samples", type=int, default=None, help="Override sample count.")
-    parser.add_argument("--format", default="PNG", help="Output image format id.")
+    parser.add_argument("--engine", choices=("eevee", "cycles"), default=None, help="Override engine.")
+    parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu", help="Cycles device.")
+    parser.add_argument("--resolution", type=resolution_type, default=None, help="Override resolution WxH.")
+    parser.add_argument("--samples", type=positive_int, default=None, help="Override sample count.")
+    parser.add_argument("--format", default="PNG", type=str.upper,
+                        choices=sorted(IMAGE_FORMAT_EXTENSIONS), help="Output image format id.")
     parser.add_argument("--animation", action="store_true", help="Render the full frame range.")
     parser.add_argument("--recursive", action="store_true", help="Recurse into subfolders.")
-    return parser.parse_args(get_argv_after_dashes())
+    parser.add_argument("--strict", action="store_true", help="SKIPPED files count as failures.")
+    parser.add_argument("--no-qa", action="store_true", help="Skip the per-file QA report.")
+    parser.add_argument("--qa-strict", action="store_true", help="QA failures count as failures.")
+    return parser.parse_args(get_argv_after_dashes() if argv is None else argv)
 
 
 def find_blend_files(input_dir, recursive):
-    """Return a sorted list of .blend files, skipping .blend1 backups."""
-    if recursive:
-        pattern = os.path.join(input_dir, "**", "*.blend")
-        files = glob.glob(pattern, recursive=True)
-    else:
-        files = glob.glob(os.path.join(input_dir, "*.blend"))
-    return sorted(f for f in files if not f.endswith(".blend1"))
+    """Return a sorted list of .blend files (``.blend1`` backups are skipped)."""
+    pattern = os.path.join(input_dir, "**", "*.blend") if recursive else os.path.join(input_dir, "*.blend")
+    return sorted(glob.glob(pattern, recursive=recursive))
 
 
 def apply_overrides(scene, args):
-    """Apply CLI overrides onto the currently open scene."""
+    """Apply CLI overrides onto the currently open scene. Returns the engine label."""
+    engine = scene.render.engine
     if args.engine:
-        set_engine(scene, args.engine)
+        engine = set_engine(scene, args.engine, device=args.device)
     if args.samples is not None:
         set_samples(scene, args.samples)
     if args.resolution:
-        try:
-            width, height = (int(v) for v in args.resolution.lower().split("x"))
-        except ValueError:
-            raise SystemExit(f"--resolution must look like 1920x1080, got {args.resolution!r}")
-        scene.render.resolution_x = width
-        scene.render.resolution_y = height
+        scene.render.resolution_x, scene.render.resolution_y = args.resolution
         scene.render.resolution_percentage = 100
-    scene.render.image_settings.file_format = args.format
+    # media_type-safe: a file saved with FFmpeg video output would otherwise
+    # reject "PNG" on Blender 5 ("enum 'PNG' not found in ('FFMPEG')").
+    color_mode = scene.render.image_settings.color_mode
+    if args.format == "JPEG" and color_mode == "RGBA":
+        color_mode = "RGB"
+    set_image_output(scene.render.image_settings, args.format, color_mode=color_mode)
+    return engine
 
 
 def render_one(blend_path, args):
     """Open and render a single .blend, returning a result dict."""
     name = os.path.splitext(os.path.basename(blend_path))[0]
     started = time.time()
-
-    bpy.ops.wm.open_mainfile(filepath=blend_path)
+    try:
+        bpy.ops.wm.open_mainfile(filepath=blend_path)
+    except RuntimeError as exc:
+        # Blender's message repeats the full path twice; keep the reason.
+        reason = str(exc).strip().splitlines()[0].rsplit(": ", 1)[-1]
+        raise RuntimeError(f"cannot open .blend: {reason}") from exc
     scene = bpy.context.scene
+    result = {"file": name, "path": os.path.abspath(blend_path), "status": "OK", "output": None}
 
     if scene.camera is None:
-        return {
-            "file": name,
-            "status": "SKIPPED",
-            "detail": "no active camera",
-            "seconds": time.time() - started,
-        }
+        result.update(status="SKIPPED", detail="no active camera", seconds=time.time() - started)
+        return result
 
-    apply_overrides(scene, args)
-
-    ext = scene.render.file_extension or ".png"
+    engine = apply_overrides(scene, args)
+    out_dir = os.path.abspath(args.output)
+    scene.render.use_file_extension = True
+    images = []
     if args.animation:
-        out_path = os.path.join(os.path.abspath(args.output), name + "_")
-        scene.render.filepath = out_path
+        scene.render.filepath = os.path.join(out_dir, name + "_")
         bpy.ops.render.render(animation=True)
+        ext = image_extension(args.format)
+        images = [os.path.join(out_dir, f"{name}_{f:04d}{ext}") for f in (scene.frame_start, scene.frame_end)]
+        result["output"] = os.path.join(out_dir, f"{name}_####{ext}")
         detail = f"frames {scene.frame_start}-{scene.frame_end}"
     else:
-        out_path = os.path.join(os.path.abspath(args.output), name + ext)
+        out_path = os.path.join(out_dir, name + image_extension(args.format))
+        scene.render.use_file_extension = False
         scene.render.filepath = out_path
         bpy.ops.render.render(write_still=True)
+        images = [out_path]
+        result["output"] = out_path
         detail = os.path.basename(out_path)
+    result["engine"] = engine
+    result["resolution"] = [scene.render.resolution_x, scene.render.resolution_y]
 
-    return {
-        "file": name,
-        "status": "OK",
-        "detail": detail,
-        "seconds": time.time() - started,
-    }
+    if not args.no_qa:
+        from lib import qa
 
-
-def print_summary(results):
-    """Print an aligned summary table of the batch results."""
-    if not results:
-        print("[batch] no .blend files found.")
-        return
-
-    name_w = max(len(r["file"]) for r in results)
-    name_w = max(name_w, len("FILE"))
-    header = f"{'FILE'.ljust(name_w)}  {'STATUS':<8}  {'TIME':>7}  DETAIL"
-    line = "-" * len(header)
-    print("\n" + line)
-    print(header)
-    print(line)
-    ok = 0
-    for r in results:
-        if r["status"] == "OK":
-            ok += 1
-        print(f"{r['file'].ljust(name_w)}  {r['status']:<8}  {r['seconds']:>6.1f}s  {r['detail']}")
-    print(line)
-    print(f"{ok}/{len(results)} rendered OK, {len(results) - ok} failed or skipped")
-    print(line)
+        report = qa.build_scene_report(scene, script=f"batch_render:{name}", images=images,
+                                       frames=[scene.frame_start, scene.frame_end] if args.animation else None)
+        result["qa"] = report
+        failing = [c["id"] for c in report["checks"] if c["status"] == "fail"]
+        if failing:
+            detail += f"  (QA fail: {', '.join(failing)})"
+            if args.qa_strict:
+                result["status"] = "QA_FAILED"
+    result["detail"] = detail
+    result["seconds"] = time.time() - started
+    return result
 
 
-def main():
-    args = parse_args()
+def main(argv=None):
+    args = parse_args(argv)
     input_dir = os.path.abspath(args.input)
     if not os.path.isdir(input_dir):
         raise SystemExit(f"Input folder not found: {input_dir}")
 
-    ensure_dir(os.path.abspath(args.output))
+    out_dir = ensure_dir(os.path.abspath(args.output))
     blend_files = find_blend_files(input_dir, args.recursive)
     print(f"[batch] found {len(blend_files)} .blend file(s) in {input_dir}")
 
     results = []
     for blend_path in blend_files:
         print(f"[batch] rendering {os.path.basename(blend_path)} ...")
+        started = time.time()
         try:
             results.append(render_one(blend_path, args))
         except Exception as exc:  # noqa: BLE001 - one bad file must not kill the batch
+            first_line = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
             results.append({
                 "file": os.path.splitext(os.path.basename(blend_path))[0],
+                "path": os.path.abspath(blend_path),
                 "status": "ERROR",
-                "detail": str(exc).splitlines()[0][:60],
-                "seconds": 0.0,
+                "detail": first_line[:120],
+                "error": "".join(traceback.format_exception_only(type(exc), exc)).strip(),
+                "seconds": time.time() - started,
+                "output": None,
             })
-            print(f"[batch] ERROR on {os.path.basename(blend_path)}: {exc}")
+            print(f"[batch] ERROR on {os.path.basename(blend_path)}: {first_line}")
 
-    print_summary(results)
+    print()
+    print(format_batch_table(results))
+    code = batch_exit_code(results, strict=args.strict)
+    json_path, csv_path = write_batch_summary(results, out_dir, meta={
+        "input": input_dir, "blender_version": bpy.app.version_string,
+        "strict": args.strict, "qa_strict": args.qa_strict, "exit_code": code,
+    })
+    print(f"[batch] summary -> {json_path}")
+    print(f"[batch] summary -> {csv_path}")
+    if code:
+        print(f"[batch] exiting with code {code} (errors{' or skipped files' if args.strict else ''})")
+    sys.stdout.flush()
+    raise SystemExit(code)
 
 
 if __name__ == "__main__":
