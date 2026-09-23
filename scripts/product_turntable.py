@@ -1,7 +1,7 @@
 """Render a product turntable with a studio 3-point lighting rig, EEVEE-first.
 
 Imports a model (.glb/.gltf/.obj/.fbx/.stl/.ply, by extension) or falls back
-to a bevelled demo cube. The model is centred, scaled to a 2-unit box and
+to a demo bottle. The model is centred, scaled to a 2-unit box and
 dropped so its lowest *vertex* touches the floor (measured on the evaluated
 mesh, so rotated imports and modifiers are handled). A key/fill/rim area-light
 rig and the camera orbit the product together, so the lighting stays the same
@@ -17,7 +17,7 @@ Run headless (``--python-exit-code 1`` makes Python errors fail the process):
         --python scripts/product_turntable.py -- --model assets/shoe.glb --still --render
 
 Arguments (after the "--" separator):
-    --model PATH     Model to import. Omit for the demo cube.
+    --model PATH     Model to import. Omit for the demo bottle.
     --frames N       Frames for a full 360 degree orbit (default 60).
     --still          Render one beauty frame instead of the orbit.
     --render         Actually render (otherwise just build the scene).
@@ -134,18 +134,57 @@ def import_model(path):
     return meshes
 
 
-def build_demo_product():
-    """Fallback subject: a bevelled cube with a clean plastic material."""
-    bpy.ops.mesh.primitive_cube_add(size=2.0)
-    cube = bpy.context.active_object
-    cube.name = "DemoProduct"
-    bevel = cube.modifiers.new(name="Bevel", type="BEVEL")
-    bevel.width = 0.12
-    bevel.segments = 4
-    bpy.ops.object.modifier_apply(modifier=bevel.name)
-    bpy.ops.object.shade_smooth()
-    cube.data.materials.append(simple_material("ProductPlastic", (0.02, 0.35, 0.75), roughness=0.35))
-    return [cube]
+# Radius / height profile of the demo bottle (metres), bottom to top. Points
+# above CAP_START get the cap material.
+BOTTLE_PROFILE = [
+    (0.00, 0.00), (0.50, 0.00), (0.56, 0.03), (0.58, 0.10), (0.58, 1.05), (0.55, 1.18),
+    (0.42, 1.34), (0.24, 1.46), (0.20, 1.55), (0.20, 1.62),
+    (0.25, 1.62), (0.26, 1.66), (0.26, 1.98), (0.24, 2.02), (0.00, 2.02),
+]
+CAP_START = 1.61
+
+
+def build_demo_product(segments=64):
+    """Fallback subject: a lathed bottle with a glossy body and a metal cap."""
+    verts, faces, cap_faces = [], [], set()
+    rings = []
+    for radius, z in BOTTLE_PROFILE:
+        if radius == 0.0:
+            rings.append([len(verts)])
+            verts.append((0.0, 0.0, z))
+            continue
+        ring = []
+        for k in range(segments):
+            a = 2.0 * math.pi * k / segments
+            ring.append(len(verts))
+            verts.append((radius * math.cos(a), radius * math.sin(a), z))
+        rings.append(ring)
+    for level, (lower, upper) in enumerate(zip(rings, rings[1:])):
+        is_cap = min(BOTTLE_PROFILE[level][1], BOTTLE_PROFILE[level + 1][1]) >= CAP_START
+        for k in range(segments):
+            k2 = (k + 1) % segments
+            if len(lower) == 1:
+                face = (lower[0], upper[k2], upper[k])
+            elif len(upper) == 1:
+                face = (lower[k], lower[k2], upper[0])
+            else:
+                face = (lower[k], lower[k2], upper[k2], upper[k])
+            if is_cap:
+                cap_faces.add(len(faces))
+            faces.append(face)
+    mesh = bpy.data.meshes.new("DemoProduct")
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    body = simple_material("ProductBody", (0.03, 0.22, 0.55), roughness=0.18)
+    cap = simple_material("ProductCap", (0.85, 0.78, 0.62), roughness=0.25, metallic=1.0)
+    mesh.materials.append(body)
+    mesh.materials.append(cap)
+    for i, poly in enumerate(mesh.polygons):
+        poly.material_index = 1 if i in cap_faces else 0
+        poly.use_smooth = True
+    obj = bpy.data.objects.new("DemoProduct", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    return [obj]
 
 
 def normalize_objects(objects, target_size=2.0):
@@ -290,7 +329,7 @@ def main(argv=None):
         print(f"[turntable] imported {len(subjects)} mesh object(s) from {model_path}")
     else:
         subjects = build_demo_product()
-        print("[turntable] no --model given; using the demo bevelled cube")
+        print("[turntable] no --model given; using the demo bottle")
 
     # Transparent film (PNG with alpha) unless a cyclorama fills the view or the
     # output is a video, which has no alpha channel.
