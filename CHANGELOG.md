@@ -82,7 +82,7 @@ by the test-suite.
   `--in-place`, schema validation with every problem listed, output extension
   follows the preset format.
 - `cleanup_scene`: `--output`, `--json`, collision-free renames.
-- Every generator script: `--save-blend PATH`.
+- `procedural_city`, `product_turntable`, `csv_to_bars3d`: `--save-blend PATH`.
 - `pyproject.toml` with the `bpt` console script and pytest configuration.
 
 ### Changed

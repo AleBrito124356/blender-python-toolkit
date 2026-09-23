@@ -11,8 +11,7 @@ Files written:
     nocam.blend     same scene without a camera
     videoout.blend  hero whose output is set to FFmpeg video (Blender 5 media_type trap)
     corrupt.blend   random bytes with a .blend name
-    messy.blend     mirrored single-user cube, two mirrored objects sharing one mesh,
-                    an orphan mesh and an orphan material
+    messy.blend     mirrored single-user cube and two objects sharing one mirrored mesh
     suzanne.glb     Suzanne rotated (0.3, 0, 0.8) rad, exported as glTF binary
     qa_crop.blend   sphere half outside the camera frame
     qa_black.blend  lit-less scene with a black world
@@ -20,7 +19,6 @@ Files written:
     qa_good.blend   sphere resting on a ground plane, lit and framed
 """
 
-import math
 import os
 import sys
 
@@ -117,9 +115,6 @@ shared_a.scale = (1.0, -1.0, 1.0)
 shared_b = bpy.data.objects.new("SharedB", shared_a.data)
 shared_b.location = (6.0, 0.0, 0.5)
 bpy.context.scene.collection.objects.link(shared_b)
-orphan_mesh = bpy.data.meshes.new("OrphanMesh")
-orphan_mat = bpy.data.materials.new("OrphanMat")
-assert orphan_mesh.users == 0 and orphan_mat.users == 0
 add_camera((6.0, -10.0, 5.0), target=(2.0, 0.0, 0.5))
 save("messy.blend")
 
