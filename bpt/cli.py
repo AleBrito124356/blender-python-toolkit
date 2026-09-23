@@ -225,7 +225,10 @@ def main(argv=None, runner=subprocess.run):
             return 1
 
     if ns.command == "doctor":
-        return doctor(candidate, runner=runner, as_json=ns.json)
+        unknown = [a for a in ns.args if a != "--json"]
+        if unknown:
+            parser.error(f"doctor takes no arguments besides --json (got {' '.join(unknown)})")
+        return doctor(candidate, runner=runner, as_json=ns.json or "--json" in ns.args)
 
     script, script_args = resolve_script(ns.command, ns.args)
     blender = candidate.path if candidate else "blender"

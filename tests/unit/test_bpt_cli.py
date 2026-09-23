@@ -1,5 +1,6 @@
 """bpt launcher: Blender discovery and command construction (no Blender needed)."""
 
+import json
 import os
 import subprocess
 import sys
@@ -122,7 +123,8 @@ def test_main_runs_script_and_propagates_exit_code(fake_blender):
     code = cli.main(["bars", "--csv", "missing.csv"], runner=fake_runner(1, calls))
     assert code == 1
     (cmd,) = calls
-    assert cmd[0] == fake_blender and cmd[cmd.index("--python") + 1].endswith(os.path.join("scripts", "csv_to_bars3d.py"))
+    script = cmd[cmd.index("--python") + 1]
+    assert cmd[0] == fake_blender and script.endswith(os.path.join("scripts", "csv_to_bars3d.py"))
     assert cmd[cmd.index("--") + 1:] == ["--csv", "missing.csv"]
     assert cli.main(["city"], runner=fake_runner(0)) == 0
 
@@ -177,6 +179,22 @@ def test_doctor_parses_blender_answer(fake_blender, capsys):
     out = capsys.readouterr().out
     assert "5.2.1 LTS" in out and "BLENDER_EEVEE, CYCLES" in out and "pip install pyyaml" in out
     assert "renders on the CPU" in out
+
+
+def test_doctor_json_flag_works_before_or_after_the_command(fake_blender, capsys):
+    payload = ('{"version": "5.2.1 LTS", "python": "3.13.1", "python_executable": "py", '
+               '"engines": ["BLENDER_EEVEE"], "ffmpeg": false, "cycles_gpu": {"OPTIX": ["RTX"]}, '
+               '"numpy": null, "pyyaml": "6.0"}')
+
+    def run(cmd, **kwargs):
+        return types.SimpleNamespace(returncode=0, stdout="BPT_DOCTOR=" + payload, stderr="")
+
+    for argv in (["doctor", "--json"], ["--json", "doctor"]):
+        assert cli.main(argv, runner=run) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["blender"]["version"] == "5.2.1 LTS" and data["blender"]["cycles_gpu"] == {"OPTIX": ["RTX"]}
+    with pytest.raises(SystemExit):
+        cli.main(["doctor", "--bogus"], runner=run)
 
 
 def test_doctor_reports_a_broken_blender(fake_blender, capsys):

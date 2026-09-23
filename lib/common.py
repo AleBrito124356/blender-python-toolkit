@@ -808,7 +808,7 @@ def render_still(scene, path, fmt=None, color_mode=None):
     return path
 
 
-def run_qa(args, script, subjects_note=None, images=(), frames=None, scene=None):
+def run_qa(args, script, images=(), frames=None, scene=None):
     """Build, print and optionally write the QA report; honour ``--qa-strict``.
 
     Returns the report dict (or None when neither ``--report`` nor

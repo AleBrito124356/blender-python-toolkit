@@ -252,7 +252,8 @@ def occluded_fraction(scene, depsgraph, camera, obj, pts, samples=24):
             continue
         hit, location, _normal, _index, hit_obj, _matrix = scene.ray_cast(depsgraph, origin, ray / dist,
                                                                            distance=dist)
-        if hit and hit_obj is not None and hit_obj.original is not obj.original                 and (location - origin).length < dist - max(1e-3, dist * 1e-4):
+        in_front = hit and (location - origin).length < dist - max(1e-3, dist * 1e-4)
+        if in_front and hit_obj is not None and hit_obj.original is not obj.original:
             hidden += 1
     return hidden / len(idx)
 
