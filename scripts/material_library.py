@@ -1,26 +1,34 @@
 """Build a reusable .blend library of 8 procedural PBR materials.
 
-Each material is created by a documented node-graph builder function - brushed
+Each material is created by a documented node-graph builder function: brushed
 metal, plastic, rubber, wood, glass, emission, car paint and ceramic. Every
 material gets a fake user so it survives a save even without an object using
 it, which is what lets you Append or Link it into other files. Optionally adds
-a row of preview spheres and renders a contact sheet.
+a row of preview spheres, fits the camera to the whole row for the preview's
+aspect ratio, and renders a contact sheet with EEVEE ray tracing enabled so
+the glass sphere actually refracts.
 
-Run headless:
+Run headless (``--python-exit-code 1`` makes Python errors fail the process):
 
-    blender --background --python scripts/material_library.py -- --out material_library.blend
-    blender --background --python scripts/material_library.py -- --spheres --render
+    blender --background --factory-startup --python-exit-code 1 \
+        --python scripts/material_library.py -- --out material_library.blend
+    blender --background --factory-startup --python-exit-code 1 \
+        --python scripts/material_library.py -- --spheres --render
 
 Arguments (after the "--" separator):
-    --out PATH     Output .blend path (default material_library.blend).
-    --spheres      Add a preview sphere per material (shade-smoothed).
-    --render       Render a preview to out/materials.png (implies --spheres).
-    --res WxH      Preview resolution (default 1600x600).
-    --samples N    Render samples (default 96).
-    --cycles       Use Cycles instead of EEVEE for the preview.
+    --out PATH       Output .blend path (default material_library.blend).
+    --spheres        Add a preview sphere per material (shade-smoothed).
+    --render         Render a preview (implies --spheres).
+    --preview PATH   Preview image path (default out/materials.png).
+    --res WxH        Preview resolution (default 1600x600).
+    --samples N      Render samples (default 96).
+    --engine NAME    eevee (default) or cycles.
+    --device NAME    gpu (default, falls back to CPU) or cpu. Cycles only.
+    --report PATH    Write a JSON QA report for the preview.
+    --qa-strict      Exit with code 3 if any QA check fails.
 
-Blender 4.0 renamed many Principled BSDF sockets. The _set helper below tries
-several candidate socket names so the same code runs on Blender 3.x and 4.x.
+Blender 4.0 renamed many Principled BSDF sockets. ``set_input`` tries several
+candidate socket names so the same code runs on Blender 3.6 through 5.x.
 """
 
 from __future__ import annotations
@@ -30,24 +38,32 @@ import os
 import sys
 
 import bpy
-from mathutils import Vector
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib.common import (  # noqa: E402
+    add_render_args,
+    apply_render_settings,
     clean_default_scene,
+    direction_from_angles,
+    enable_eevee_raytracing,
     ensure_dir,
+    frame_objects,
+    get_argv_after_dashes,
     hex_to_linear_rgba,
     look_at,
     new_area_light,
     new_camera,
-    set_engine,
-    set_samples,
-    set_view_transform,
-    get_argv_after_dashes,
+    new_material,
+    new_world,
+    render_still,
+    run_qa,
+    set_input,
+    simple_material,
+    tag_role,
 )
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="material_library.py",
         description="Build a .blend library of 8 procedural PBR materials.",
@@ -55,32 +71,18 @@ def parse_args():
     parser.add_argument("--out", default="material_library.blend", help="Output .blend path.")
     parser.add_argument("--spheres", action="store_true", help="Add preview spheres.")
     parser.add_argument("--render", action="store_true", help="Render a preview contact sheet.")
-    parser.add_argument("--res", default="1600x600", help="Preview resolution WxH.")
-    parser.add_argument("--samples", type=int, default=96, help="Render samples.")
-    parser.add_argument("--cycles", action="store_true", help="Use Cycles for the preview.")
-    return parser.parse_args(get_argv_after_dashes())
+    parser.add_argument("--preview", default=os.path.join("out", "materials.png"), help="Preview image path.")
+    add_render_args(parser, res="1600x600", samples=96)
+    return parser.parse_args(get_argv_after_dashes() if argv is None else argv)
 
 
-def _set(node, names, value):
-    """Set the first existing input socket from ``names`` to ``value``.
-
-    Returns True if a socket was found. Used to paper over the Principled BSDF
-    socket renames between Blender 3.x and 4.x.
-    """
-    if isinstance(names, str):
-        names = [names]
-    for name in names:
-        if name in node.inputs:
-            node.inputs[name].default_value = value
-            return True
-    return False
+_set = set_input  # the builders below predate lib.common.set_input
 
 
 def _new_material(name):
     """Create a node-based material with a cleared tree, plus output+bsdf."""
-    mat = bpy.data.materials.new(name)
+    mat = new_material(name)
     mat.use_fake_user = True  # survive save even with no user object
-    mat.use_nodes = True
     nt = mat.node_tree
     nt.nodes.clear()
     output = nt.nodes.new("ShaderNodeOutputMaterial")
@@ -201,9 +203,12 @@ def make_glass():
     _set(bsdf, "Roughness", 0.02)
     _set(bsdf, ["Transmission", "Transmission Weight"], 1.0)
     _set(bsdf, "IOR", 1.45)
-    # EEVEE Legacy needs this per-material flag to actually refract.
-    if hasattr(mat, "use_screen_refraction"):
-        mat.use_screen_refraction = True
+    # Per-material refraction flag: use_raytrace_refraction on EEVEE Next /
+    # Blender 5, use_screen_refraction on EEVEE Legacy. The scene also needs
+    # ray tracing turned on (see enable_eevee_raytracing).
+    for flag in ("use_raytrace_refraction", "use_screen_refraction"):
+        if hasattr(mat, flag):
+            setattr(mat, flag, True)
     return mat
 
 
@@ -269,57 +274,49 @@ def add_preview_spheres(materials):
     spacing = 2.6
     x0 = -spacing * (len(materials) - 1) / 2.0
     for i, mat in enumerate(materials):
-        bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0, location=(x0 + i * spacing, 0.0, 1.0))
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0, segments=48, ring_count=24,
+                                             location=(x0 + i * spacing, 0.0, 1.0))
         sphere = bpy.context.active_object
         sphere.name = f"Preview_{mat.name.replace(' ', '_')}"
         bpy.ops.object.shade_smooth()
         sphere.data.materials.append(mat)
+        tag_role(sphere, "subject")
         spheres.append(sphere)
 
-    # Neutral pedestal plane.
-    bpy.ops.mesh.primitive_plane_add(size=spacing * len(materials) + 6.0, location=(0.0, 0.0, 0.0))
+    bpy.ops.mesh.primitive_plane_add(size=spacing * len(materials) + 60.0, location=(0.0, 0.0, 0.0))
     plane = bpy.context.active_object
     plane.name = "PreviewFloor"
-    floor_mat = bpy.data.materials.new("PreviewFloor")
-    floor_mat.use_nodes = True
-    fbsdf = floor_mat.node_tree.nodes.get("Principled BSDF")
-    if fbsdf is not None:
-        fbsdf.inputs["Base Color"].default_value = (0.12, 0.12, 0.13, 1.0)
-    plane.data.materials.append(floor_mat)
+    plane.data.materials.append(simple_material("PreviewFloor", (0.12, 0.12, 0.13), roughness=0.5))
+    tag_role(plane, "backdrop")
+    bpy.context.scene["qa_ground_z"] = 0.0
     return spheres
 
 
 def build_preview_lighting(spheres):
-    """World, key/fill lights and a camera framing the sphere row."""
-    world = bpy.data.worlds.new("PreviewWorld")
-    world.use_nodes = True
-    bg = world.node_tree.nodes.get("Background")
-    if bg is not None:
-        bg.inputs["Color"].default_value = (0.04, 0.04, 0.05, 1.0)
-        bg.inputs["Strength"].default_value = 1.0
-    bpy.context.scene.world = world
-
+    """World, key/fill lights and a camera fitted to the sphere row."""
+    new_world("PreviewWorld", color=(0.04, 0.04, 0.05), strength=1.0)
     width = max(len(spheres) * 2.6, 6.0)
     key = new_area_light("Key", (-width * 0.6, -width, width), energy=2500.0, size=width)
     fill = new_area_light("Fill", (width * 0.6, -width * 0.6, width * 0.7), energy=800.0, size=width)
     for light in (key, fill):
-        look_at(light, Vector((0.0, 0.0, 1.0)))
-
+        look_at(light, (0.0, 0.0, 1.0))
     cam = new_camera(name="PreviewCamera", lens=55.0)
-    cam.location = Vector((0.0, -width * 1.35, width * 0.55))
-    look_at(cam, Vector((0.0, 0.0, 1.0)))
+    # The render resolution is already set, so the fit uses the real aspect.
+    frame_objects(cam, spheres, direction=direction_from_angles(0.0, 18.0), margin=1.06)
     return cam
 
 
-def main():
-    args = parse_args()
+def main(argv=None):
+    args = parse_args(argv)
     clean_default_scene()
+    scene = bpy.context.scene
 
     materials = [builder() for builder in BUILDERS]
     print(f"[materials] built {len(materials)} materials: " + ", ".join(m.name for m in materials))
 
-    want_spheres = args.spheres or args.render
-    if want_spheres:
+    engine = apply_render_settings(scene, args)
+    enable_eevee_raytracing(scene)
+    if args.spheres or args.render:
         spheres = add_preview_spheres(materials)
         build_preview_lighting(spheres)
 
@@ -328,25 +325,13 @@ def main():
     bpy.ops.wm.save_as_mainfile(filepath=out_path)
     print(f"[materials] saved library -> {out_path}")
 
+    images = []
     if args.render:
-        scene = bpy.context.scene
-        engine = set_engine(scene, "cycles" if args.cycles else "eevee")
-        set_samples(scene, args.samples)
-        set_view_transform(scene)
-        try:
-            width, height = (int(v) for v in args.res.lower().split("x"))
-        except ValueError:
-            raise SystemExit(f"--res must look like 1600x600, got {args.res!r}")
-        scene.render.resolution_x = width
-        scene.render.resolution_y = height
-        scene.render.resolution_percentage = 100
-        scene.render.image_settings.file_format = "PNG"
-        preview_path = os.path.abspath(os.path.join("out", "materials.png"))
-        ensure_dir(os.path.dirname(preview_path))
-        scene.render.filepath = preview_path
-        print(f"[materials] rendering preview with {engine} -> {preview_path}")
-        bpy.ops.render.render(write_still=True)
-        print(f"[materials] wrote {preview_path}")
+        print(f"[materials] rendering preview with {engine} -> {os.path.abspath(args.preview)}")
+        images.append(render_still(scene, args.preview))
+        print(f"[materials] wrote {images[-1]}")
+    if args.spheres or args.render:
+        run_qa(args, "material_library", images=images)
 
 
 if __name__ == "__main__":
