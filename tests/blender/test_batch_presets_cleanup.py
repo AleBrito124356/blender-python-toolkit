@@ -96,8 +96,7 @@ def test_presets_list_and_validation(run_blender, tmp_path):
 
 def test_cleanup_keeps_normals_outward_and_reports_shared_mirrors(run_blender, fixtures_dir, tmp_path):
     scene = copy_fixtures(fixtures_dir, tmp_path, ["messy"]) / "messy.blend"
-    report = tmp_path / "cleanup.json"
-    run = run_blender("cleanup_scene.py", ["--input", scene, "--execute", "--json", report])
+    run = run_blender("cleanup_scene.py", ["--input", scene, "--execute"])
     assert run.returncode == 0, run
     assert "shares mesh" in run.output
     cleaned = tmp_path / "messy_clean.blend"
@@ -107,7 +106,17 @@ def test_cleanup_keeps_normals_outward_and_reports_shared_mirrors(run_blender, f
     assert (cube["outward"], cube["inward"]) == (6, 0)  # was outward=0 inward=6 (double flip)
     shared = normals["MESH_SharedA"]
     assert shared["scale"][1] == -1.0  # left mirrored instead of silently un-mirrored with abs()
-    assert load_json(report)["mirrored_shared"] == ["SharedA"]
+
+
+def test_cleanup_json_report(run_blender, fixtures_dir, tmp_path):
+    scene = copy_fixtures(fixtures_dir, tmp_path, ["messy"]) / "messy.blend"
+    report = tmp_path / "cleanup.json"
+    run = run_blender("cleanup_scene.py", ["--input", scene, "--json", report])
+    assert run.returncode == 0, run
+    data = load_json(report)
+    assert data["execute"] is False and data["output"] is None
+    assert data["mirrored_fixable"] == ["Cube"] and data["mirrored_shared"] == ["SharedA"]
+    assert ["Cube", "MESH_Cube"] in data["renames"]
 
 
 def test_cleanup_dry_run_writes_nothing(run_blender, fixtures_dir, tmp_path):

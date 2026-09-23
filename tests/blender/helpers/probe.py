@@ -17,6 +17,7 @@ toolkit's helpers, so the tests check the toolkit instead of trusting it.
 """
 
 import json
+import math
 import os
 import sys
 
@@ -150,6 +151,11 @@ def probe_bars():
     return {"bars": bars, "labels": labels, "camera_y": cam.matrix_world.translation.y}
 
 
+def probe_dimensions():
+    bpy.context.view_layer.update()
+    return {o.name: list(o.dimensions) for o in bpy.context.scene.objects if o.type == "MESH"}
+
+
 def probe_materials():
     return {m.name: {"fake_user": m.use_fake_user, "users": m.users,
                      "raytrace_refraction": getattr(m, "use_raytrace_refraction", None)}
@@ -168,9 +174,12 @@ def probe_scene():
     samples = scene.cycles.samples if r.engine == "CYCLES" else scene.eevee.taa_render_samples
     ims = r.image_settings
     world = scene.world
-    skies = []
+    skies, sky_elevations = [], []
     if world is not None and world.node_tree is not None:
-        skies = [n.sky_type for n in world.node_tree.nodes if n.bl_idname == "ShaderNodeTexSky"]
+        for node in world.node_tree.nodes:
+            if node.bl_idname == "ShaderNodeTexSky":
+                skies.append(node.sky_type)
+                sky_elevations.append(math.degrees(node.sun_elevation))
     return {
         "resolution": [r.resolution_x, r.resolution_y, r.resolution_percentage],
         "engine": r.engine,
@@ -181,6 +190,7 @@ def probe_scene():
         "view_transform": scene.view_settings.view_transform,
         "frame_range": [scene.frame_start, scene.frame_end],
         "sky_types": skies,
+        "sky_sun_elevations": sky_elevations,
         "eevee_raytracing": getattr(scene.eevee, "use_raytracing", None),
         "camera": scene.camera.name if scene.camera else None,
         "objects": sorted(o.name for o in scene.objects),
