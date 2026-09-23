@@ -283,7 +283,8 @@ def add_preview_spheres(materials):
         tag_role(sphere, "subject")
         spheres.append(sphere)
 
-    bpy.ops.mesh.primitive_plane_add(size=spacing * len(materials) + 60.0, location=(0.0, 0.0, 0.0))
+    # Large enough to reach the horizon, so no floor edge shows at any aspect ratio.
+    bpy.ops.mesh.primitive_plane_add(size=4000.0, location=(0.0, 0.0, 0.0))
     plane = bpy.context.active_object
     plane.name = "PreviewFloor"
     plane.data.materials.append(simple_material("PreviewFloor", (0.12, 0.12, 0.13), roughness=0.5))
@@ -301,6 +302,7 @@ def build_preview_lighting(spheres):
     for light in (key, fill):
         look_at(light, (0.0, 0.0, 1.0))
     cam = new_camera(name="PreviewCamera", lens=55.0)
+    cam.data.clip_end = 5000.0
     # The render resolution is already set, so the fit uses the real aspect.
     frame_objects(cam, spheres, direction=direction_from_angles(0.0, 18.0), margin=1.06)
     return cam
