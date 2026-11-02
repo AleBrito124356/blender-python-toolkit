@@ -20,8 +20,9 @@ What is emulated, and how:
   script as ``__main__`` with ``__file__`` set, ``--python-expr EXPR`` runs
   a string, ``--python-exit-code N`` sets the code used for the scripts after it.
 * ``--factory-startup`` resets to factory settings (no user preferences or
-  add-ons) before anything else. Without it the scene is whatever
-  ``import bpy`` loaded.
+  add-ons) before anything else. Without it the user's preferences and
+  startup file are loaded, as Blender does (``import bpy`` alone does not
+  read them).
 * ``sys.argv`` is ``[<this python>, <the same arguments>]`` and is set
   *before* ``import bpy``: Blender's Cycles add-on reads the arguments after
   ``--`` while it registers, in Blender and in the module alike, so
@@ -148,6 +149,19 @@ def load_blend(bpy, path, autoexec):
     return True
 
 
+def load_user_startup(bpy):
+    """Load the user's preferences and startup file, as Blender does without --factory-startup.
+
+    ``import bpy`` starts from factory defaults and does not read
+    ``userpref.blend`` (measured on bpy 5.2.3), unlike the Blender executable.
+    """
+    try:
+        bpy.ops.wm.read_userpref()
+        bpy.ops.wm.read_homefile(use_factory_startup=False)
+    except RuntimeError as exc:
+        print(f"blender_shim: could not load the user preferences / startup file: {exc}", file=sys.stderr)
+
+
 def run_python(kind, value):
     """Run a script file or an expression as ``__main__``; False after an exception.
 
@@ -199,6 +213,8 @@ def main(argv=None):
         return 1
     if settings["factory_startup"]:
         bpy.ops.wm.read_factory_settings(use_empty=False)
+    else:
+        load_user_startup(bpy)
     exit_code_on_error = 0
     for kind, value in actions:
         if kind == "exit_code":

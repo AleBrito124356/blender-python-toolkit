@@ -150,8 +150,16 @@ def test_run_arbitrary_script(fake_blender, tmp_path):
     calls = []
     cli.main(["run", str(script), "--flag"], runner=fake_runner(0, calls))
     assert calls[0][calls[0].index("--python") + 1] == str(script) and calls[0][-1] == "--flag"
-    with pytest.raises(SystemExit):
-        cli.main(["run", str(tmp_path / "nope.py")], runner=fake_runner(0))
+    assert cli.main(["run", str(tmp_path / "nope.py")], runner=fake_runner(0)) == 2  # invalid input
+    assert cli.main(["run"], runner=fake_runner(0)) == 2
+
+
+def test_run_missing_script_answers_in_json(fake_blender, tmp_path, capsys):
+    assert cli.main(["--json", "run", str(tmp_path / "nope.py")], runner=fake_runner(0)) == 2
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["status"] == "invalid_input" and "script not found" in data["error"]
+    assert "script not found" in captured.err
 
 
 def test_missing_blender_is_an_error(monkeypatch, tmp_path, capsys):

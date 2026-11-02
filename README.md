@@ -130,7 +130,7 @@ blender --background --python scripts/procedural_city.py -- --blocks 6 --seed 7 
 
 **Why there is no `--cycles` flag.** Blender's Cycles add-on *also* reads the arguments after `--` with its own `argparse` parser, which knows `--cycles-device` and `--cycles-print-stats` and accepts abbreviations. A script flag named `--cycles` is an ambiguous abbreviation to it, so Blender exits with code 2 (`ambiguous option: --cycles could match --cycles-print-stats, --cycles-device`) before the script starts. The toolkit uses `--engine cycles` and `--device gpu|cpu` instead. (A test documents this Blender behaviour.)
 
-**Without a Blender executable.** A Python interpreter that imports `bpy` has no command line of its own, so `bpt/blender_shim.py` gives it Blender's: `python bpt/blender_shim.py <the same arguments as blender>`. It processes the arguments in order like Blender (a `.blend` path opens the file without running scripts embedded in it, `--python FILE` runs a script as `__main__`, `--python-expr` runs a string), resets to factory settings for `--factory-startup`, sets `sys.argv` to the same list *before* `import bpy` (Blender's Cycles add-on parses the arguments after `--` when it registers, in the module as in Blender, so even the `--cycles` trap above behaves identically), exits with the `--python-exit-code` on an uncaught exception, passes `sys.exit(n)` through, and fails with exit code 1 when a `.blend` cannot be opened. Blender's render flags (`-f`, `-a`, `-o`, ...) are not emulated and are rejected with a message; the toolkit's scripts render through `bpy.ops.render.render`. `tests/blender/test_runtime.py` pins this contract and runs against either runtime.
+**Without a Blender executable.** A Python interpreter that imports `bpy` has no command line of its own, so `bpt/blender_shim.py` gives it Blender's: `python bpt/blender_shim.py <the same arguments as blender>`. It processes the arguments in order like Blender (a `.blend` path opens the file without running scripts embedded in it, `--python FILE` runs a script as `__main__`, `--python-expr` runs a string), resets to factory settings for `--factory-startup` (and without it loads your preferences and startup file like Blender does, which `import bpy` alone does not), sets `sys.argv` to the same list *before* `import bpy` (Blender's Cycles add-on parses the arguments after `--` when it registers, in the module as in Blender, so even the `--cycles` trap above behaves identically), exits with the `--python-exit-code` on an uncaught exception, passes `sys.exit(n)` through, and fails with exit code 1 when a `.blend` cannot be opened. Blender's render flags (`-f`, `-a`, `-o`, ...) are not emulated and are rejected with a message; the toolkit's scripts render through `bpy.ops.render.render`. `tests/blender/test_runtime.py` pins this contract and runs against either runtime.
 
 **EEVEE vs Cycles.**
 
@@ -398,8 +398,8 @@ The same in every script and in `bpt --json` (`status`):
 
 ```bash
 .venv/bin/python -m pip install -r requirements.txt -e .
-.venv/bin/python -m pytest tests/unit          # 265 tests, no Blender needed, under a second
-.venv/bin/python -m pytest -m blender          # runs every script in a headless Blender (78 tests, ~3-4 min)
+.venv/bin/python -m pytest tests/unit          # 266 tests, no Blender needed, under a second
+.venv/bin/python -m pytest -m blender          # runs every script in a headless Blender (79 tests, ~3-4 min)
 BLENDER_EXE=/path/to/bpy-venv/bin/python .venv/bin/python -m pytest -m blender   # the same suite on pip install bpy
 ```
 

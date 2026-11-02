@@ -18,8 +18,10 @@ tested on Blender 5.2.1 LTS (Windows 11).
   `BLENDER_PYTHON` and then to the interpreter running `bpt`.
   `bpt/blender_shim.py` emulates `blender --background --factory-startup
   --python-exit-code 1 [file.blend] --python script.py -- args` on the module
-  (argument order, factory settings, `.blend` loading without embedded
-  scripts, `sys.argv` set before `import bpy`, exit codes). `bpt doctor`
+  (argument order, factory settings or, without `--factory-startup`, the
+  user's preferences and startup file, which `import bpy` alone does not
+  load; `.blend` loading without embedded scripts, `sys.argv` set before
+  `import bpy`, exit codes). `bpt doctor`
   reports the runtime kind, glTF / Draco / USD export support and libEGL;
   `bpt --dry-run` prints the shim command.
 - **`bpt export`** (`scripts/export_web.py`): a .blend or a model
@@ -45,6 +47,8 @@ tested on Blender 5.2.1 LTS (Windows 11).
   (`lib.core.write_summary`).
 - `skills/blender-toolkit/SKILL.md`: an Agent Skill that teaches an AI agent
   when and how to use `bpt` headlessly and how to read its JSON.
+- `bpt run missing.py` exits 2 (invalid input) and answers in JSON with
+  `--json`.
 - `.github/workflows/ci.yml`: unit tests on Python 3.9 and 3.13, and the
   Blender integration suite on `pip install bpy` with libEGL on Ubuntu.
 - `lib/studio.py`: model import for every format the build supports,
@@ -75,6 +79,10 @@ tested on Blender 5.2.1 LTS (Windows 11).
 - The USD exporter writes bevelled curves as USD curves and subdivision as a
   scheme, so a `.usdz` would not hold the triangles of the `.glb`: curves and
   text are baked to meshes first and USD tessellates subdivision.
+- The turntable chose its OBJ / STL / PLY importer with
+  `hasattr(bpy.ops.wm, ...)`, which is true for any name, so the fallbacks
+  for older Blender versions could never run. `lib.studio` asks for the
+  operator's RNA instead (`bpt doctor` and the export's USD check too).
 
 ### Changed
 

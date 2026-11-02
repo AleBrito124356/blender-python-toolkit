@@ -110,8 +110,11 @@ if gltf:
             draco = bool(dll_path().is_file())
         except Exception:
             draco = None
-info["export"] = {"gltf": gltf, "draco": draco,
-                  "usd": bool(getattr(bpy.app.build_options, "usd", False)) and hasattr(bpy.ops.wm, "usd_export")}
+try:  # hasattr(bpy.ops.wm, name) is always True; ask for the operator's RNA instead
+    usd = bool(getattr(bpy.app.build_options, "usd", False)) and bpy.ops.wm.usd_export.get_rna_type() is not None
+except KeyError:
+    usd = False
+info["export"] = {"gltf": gltf, "draco": draco, "usd": usd}
 if sys.platform.startswith("linux"):
     import ctypes.util
     info["egl"] = ctypes.util.find_library("EGL")
@@ -161,19 +164,23 @@ def build_command(blender, script, script_args=(), factory_startup=True, kind="b
     return cmd
 
 
+class UsageError(ValueError):
+    """A command bpt cannot run as given (exit code 2)."""
+
+
 def resolve_script(command, args):
-    """Map a sub-command to ``(script_path, remaining_args)``."""
+    """Map a sub-command to ``(script_path, remaining_args)``; raises :class:`UsageError`."""
     if command == "run":
         if not args:
-            raise SystemExit("bpt run: give the path of a Python script to run inside Blender")
+            raise UsageError("bpt run: give the path of a Python script to run inside Blender")
         script = os.path.abspath(args[0])
         if not os.path.isfile(script):
-            raise SystemExit(f"bpt run: script not found: {script}")
+            raise UsageError(f"bpt run: script not found: {script}")
         return script, args[1:]
     name = COMMANDS[command][0]
     script = os.path.join(SCRIPTS_DIR, name)
     if not os.path.isfile(script):
-        raise SystemExit(
+        raise UsageError(
             f"bpt: {script} is missing. bpt runs the scripts of a source checkout; "
             "install it with 'pip install -e .' from the repository root."
         )
@@ -390,7 +397,14 @@ def main(argv=None, runner=subprocess.run, popen=subprocess.Popen):
             parser.error(f"doctor takes no arguments besides --json (got {' '.join(unknown)})")
         return doctor(candidate, runner=runner, as_json=ns.json or "--json" in ns.args)
 
-    script, script_args = resolve_script(ns.command, ns.args)
+    try:
+        script, script_args = resolve_script(ns.command, ns.args)
+    except UsageError as exc:
+        if ns.json:
+            print(json.dumps({"tool": "bpt", "bpt_version": __version__, "command": ns.command,
+                              "status": exit_status(2), "exit_code": 2, "error": str(exc)}, indent=2))
+        print(str(exc), file=sys.stderr)
+        return 2
     executable = candidate.path if candidate else "blender"
     kind = candidate.kind if candidate else "blender"
     cmd = build_command(executable, script, script_args, factory_startup=not ns.no_factory_startup, kind=kind)

@@ -124,3 +124,20 @@ def test_bpt_launcher_runs_a_script_end_to_end(blender_runtime, tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     (info,) = reported(proc.stdout + proc.stderr)
     assert info["args"] == ["--flag", "1"]
+
+
+def test_factory_startup_ignores_user_preferences_and_its_absence_loads_them(blender_cmd, tmp_path):
+    config = tmp_path / "config"
+    config.mkdir()
+    env_args = ["--background", "--factory-startup", "--python-exit-code", "1", "--python-expr",
+                "import bpy; bpy.context.preferences.view.ui_scale = 1.7; bpy.ops.wm.save_userpref()"]
+    proc = subprocess.run(blender_cmd + env_args, capture_output=True, text=True, timeout=TIMEOUT, cwd=tmp_path,
+                          env={**os.environ, "BLENDER_USER_CONFIG": str(config)}, encoding="utf-8", errors="replace")
+    assert proc.returncode == 0 and (config / "userpref.blend").exists(), proc.stdout + proc.stderr
+    show = "import bpy; print('UI_SCALE', round(bpy.context.preferences.view.ui_scale, 2))"
+    for flags, expected in ((["--factory-startup"], "UI_SCALE 1.0"), ([], "UI_SCALE 1.7")):
+        proc = subprocess.run(blender_cmd + ["--background", *flags, "--python-exit-code", "1", "--python-expr", show],
+                              capture_output=True, text=True, timeout=TIMEOUT, cwd=tmp_path,
+                              env={**os.environ, "BLENDER_USER_CONFIG": str(config)},
+                              encoding="utf-8", errors="replace")
+        assert proc.returncode == 0 and expected in proc.stdout, (flags, proc.stdout[-2000:], proc.stderr[-2000:])

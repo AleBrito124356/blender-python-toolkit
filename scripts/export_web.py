@@ -69,17 +69,17 @@ from lib.common import (  # noqa: E402
     bounds_dict,
     ensure_dir,
     get_argv_after_dashes,
-    mesh_stats,
     material_images,
+    mesh_stats,
     mesh_world_bounds,
     np,
     positive_int,
     renderable_geometry,
 )
 from lib.core import (  # noqa: E402
+    EXIT_CHECK_FAILED,
     MODEL_EXTENSIONS,
     ROUNDTRIP_TOLERANCE,
-    EXIT_CHECK_FAILED,
     decimate_ratio,
     export_exit_code,
     fail_input,
@@ -176,7 +176,10 @@ def export_capabilities():
                 draco = bool(dll_path().is_file())
             except Exception:  # noqa: BLE001
                 draco = False
-    usd = bool(getattr(bpy.app.build_options, "usd", False)) and hasattr(bpy.ops.wm, "usd_export")
+    try:  # hasattr(bpy.ops.wm, name) is always True; ask for the operator's RNA instead
+        usd = bool(getattr(bpy.app.build_options, "usd", False)) and bpy.ops.wm.usd_export.get_rna_type() is not None
+    except KeyError:
+        usd = False
     return {"gltf": gltf, "draco": draco, "usd": usd}
 
 
@@ -353,7 +356,9 @@ def downscale_images(images, max_size, workdir, warnings):
         if max_size:
             new_w, new_h = fit_size(width, height, max_size)
             if (new_w, new_h) != (width, height):
-                if img.is_float:
+                if img.source == "TILED":
+                    warnings.append(f"texture {img.name!r} is a UDIM tile set; UDIM textures are not downscaled")
+                elif img.is_float:
                     warnings.append(f"texture {img.name!r} is a float image; float textures are not downscaled")
                 else:
                     replace_with_scaled(img, new_w, new_h, workdir)
