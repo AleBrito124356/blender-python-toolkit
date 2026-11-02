@@ -87,7 +87,8 @@ def test_presets_render_a_video_configured_scene(run_blender, fixtures_dir, tmp_
 
 def test_presets_list_and_validation(run_blender, tmp_path):
     run = run_blender("render_presets.py", ["--list"])
-    assert run.returncode == 0 and "preview" in run.output and "builtin parser" in run.output
+    assert run.returncode == 0 and "preview" in run.output
+    assert "builtin parser" in run.output or "PyYAML" in run.output  # PyYAML only if that Python has it
     bad = tmp_path / "bad.yaml"
     bad.write_text("oops:\n  samples: 0\n  engine: luxcore\n", encoding="utf-8")
     run = run_blender("render_presets.py", ["--presets", bad, "--list"])

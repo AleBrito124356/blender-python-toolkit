@@ -1637,7 +1637,7 @@ def roundtrip_checks(expected, measured, tolerance=ROUNDTRIP_TOLERANCE, label="g
     worst = max(max(abs(a - b) for a, b in zip(lo_e, lo_m)), max(abs(a - b) for a, b in zip(hi_e, hi_m)))
     ok = worst <= tol
     checks.append(_check(f"{label}_bounds", "pass" if ok else "fail",
-                         f"bounds agree within {worst:.3g} m (tolerance {tol:.3g} m)" if ok else
+                         f"bounds agree: largest difference {worst:.3g} m (tolerance {tol:.3g} m)" if ok else
                          f"bounds differ by {worst:.4g} m (tolerance {tol:.3g} m): exported "
                          f"{_fmt_box(lo_e, hi_e)}, re-imported {_fmt_box(lo_m, hi_m)}",
                          expected=expected["bounds"], measured=measured["bounds"], difference=worst))
