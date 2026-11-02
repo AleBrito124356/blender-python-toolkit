@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 import bpy
 
@@ -49,7 +50,7 @@ from lib.common import (  # noqa: E402
     resolution_type,
     set_samples,
 )
-from lib.core import parse_frames  # noqa: E402
+from lib.core import condense_report, fail_input, parse_frames, write_summary  # noqa: E402
 
 
 def frames_type(text):
@@ -77,10 +78,11 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
+    started = time.time()
     args = parse_args(argv)
     path = os.path.abspath(args.input)
     if not os.path.exists(path):
-        raise SystemExit(f"Input .blend not found: {path}")
+        fail_input(f"Input .blend not found: {path}")
     bpy.ops.wm.open_mainfile(filepath=path)
     scene = bpy.context.scene
     if args.res:
@@ -103,12 +105,24 @@ def main(argv=None):
     report = qa.build_scene_report(scene, script=f"inspect:{os.path.basename(path)}", images=images,
                                    frames=args.frames, ground_z=args.ground_z)
     print(qa.format_text(report))
+    report_path = None
     if args.report:
-        print(f"[inspect] report -> {qa.write_report(report, args.report)}")
+        report_path = qa.write_report(report, args.report)
+        print(f"[inspect] report -> {report_path}")
     if args.json:
         print(json.dumps(report, indent=2))
+    failed = args.qa_strict and not report["passed"]
+    write_summary({
+        "script": "inspect_render",
+        "status": "check_failed" if failed else "ok",
+        "input": path,
+        "outputs": [os.path.abspath(p) for p in images],
+        "report": report_path,
+        "qa": condense_report(report),
+        "seconds": round(time.time() - started, 3),
+    })
     sys.stdout.flush()
-    if args.qa_strict and not report["passed"]:
+    if failed:
         raise SystemExit(3)
 
 

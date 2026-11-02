@@ -31,6 +31,8 @@ import os
 import bpy
 from mathutils import Vector
 
+from lib.core import condense_report, write_summary  # noqa: F401
+from lib.core import summary_path as core_summary_path
 from lib.core import (  # noqa: F401  (re-exported for backward compatibility)
     format_for_path,
     get_argv_after_dashes,
@@ -199,11 +201,13 @@ def add_box(name, width, depth, height, location=(0.0, 0.0), base_z=0.0, materia
     return obj
 
 
-def evaluated_world_vertices(objects, depsgraph=None):
+def evaluated_world_vertices(objects, depsgraph=None, faces_only=False):
     """World-space vertices of ``objects`` after modifiers, as an (N, 3) array.
 
     Curves and text objects are converted through the depsgraph, so labels
-    count too. Non-geometry objects are ignored.
+    count too. Non-geometry objects are ignored. ``faces_only`` keeps only
+    vertices used by a face, which is what mesh exporters write (loose
+    vertices and edges are dropped by the glTF exporter by default).
     """
     depsgraph = depsgraph or bpy.context.evaluated_depsgraph_get()
     chunks = []
@@ -223,8 +227,14 @@ def evaluated_world_vertices(objects, depsgraph=None):
                 co = np.empty(n * 3, dtype=np.float64)
                 mesh.vertices.foreach_get("co", co)
                 co = co.reshape(n, 3)
+                if faces_only:
+                    mesh.calc_loop_triangles()
+                    tri = np.empty(len(mesh.loop_triangles) * 3, dtype=np.int64)
+                    mesh.loop_triangles.foreach_get("vertices", tri)
+                    co = co[np.unique(tri)]
                 mw = np.array(eval_obj.matrix_world, dtype=np.float64)
-                chunks.append(co @ mw[:3, :3].T + mw[:3, 3])
+                if len(co):
+                    chunks.append(co @ mw[:3, :3].T + mw[:3, 3])
         finally:
             eval_obj.to_mesh_clear()
     if not chunks:
@@ -247,6 +257,122 @@ def mesh_world_bounds(objects, depsgraph=None):
     center = (lo + hi) / 2.0
     radius = float(np.sqrt(((pts - center) ** 2).sum(axis=1)).max())
     return Vector(lo), Vector(hi), Vector(center), max(radius, 1e-4)
+
+
+def mesh_stats(objects, depsgraph=None):
+    """Triangle, vertex and face counts of the evaluated meshes of ``objects``.
+
+    Triangles come from ``loop_triangles`` (an n-gon counts as n - 2), which
+    is how the glTF exporter triangulates, so the numbers are comparable with
+    an exported file. Objects that share a mesh are counted once per object,
+    like the instances in an exported scene. ``area`` is the world-space
+    surface area (square scene units), a cheap way to see that a decimation
+    kept the surface instead of deleting triangles.
+    """
+    depsgraph = depsgraph or bpy.context.evaluated_depsgraph_get()
+    tris = verts = faces = counted = 0
+    area = 0.0
+    for obj in objects:
+        if obj.type not in GEOMETRY_TYPES:
+            continue
+        eval_obj = obj.evaluated_get(depsgraph)
+        try:
+            mesh = eval_obj.to_mesh()
+        except RuntimeError:
+            continue
+        if mesh is None:
+            continue
+        try:
+            mesh.calc_loop_triangles()
+            n_tri, n_vert = len(mesh.loop_triangles), len(mesh.vertices)
+            tris += n_tri
+            verts += n_vert
+            faces += len(mesh.polygons)
+            counted += 1
+            if n_tri:
+                co = np.empty(n_vert * 3, dtype=np.float64)
+                mesh.vertices.foreach_get("co", co)
+                mw = np.array(eval_obj.matrix_world, dtype=np.float64)
+                co = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
+                tri = np.empty(n_tri * 3, dtype=np.int64)
+                mesh.loop_triangles.foreach_get("vertices", tri)
+                a, b, c = (co[tri.reshape(-1, 3)[:, k]] for k in range(3))
+                area += 0.5 * float(np.linalg.norm(np.cross(b - a, c - a), axis=1).sum())
+        finally:
+            eval_obj.to_mesh_clear()
+    return {"objects": counted, "triangles": tris, "vertices": verts, "faces": faces, "area": round(area, 6)}
+
+
+def bounds_dict(objects, depsgraph=None, scale=1.0, faces_only=False):
+    """``{"min", "max", "size", "center"}`` (lists, 6 decimals) of the evaluated vertices.
+
+    ``faces_only`` ignores loose vertices and edges (see :func:`evaluated_world_vertices`).
+    """
+    pts = evaluated_world_vertices(list(objects), depsgraph, faces_only=faces_only)
+    if len(pts) == 0:
+        zero = [0.0, 0.0, 0.0]
+        return {"min": zero, "max": list(zero), "size": list(zero), "center": list(zero)}
+    lo, hi = pts.min(axis=0) * scale, pts.max(axis=0) * scale
+
+    def r(values):
+        return [round(float(v), 6) for v in values]
+
+    return {"min": r(lo), "max": r(hi), "size": r(hi - lo), "center": r((lo + hi) / 2.0)}
+
+
+def material_images(material):
+    """Images used by the image-texture nodes of ``material`` (node groups included)."""
+    found, stack, seen = [], [getattr(material, "node_tree", None)], set()
+    while stack:
+        tree = stack.pop()
+        if tree is None or tree.name_full in seen:
+            continue
+        seen.add(tree.name_full)
+        for node in tree.nodes:
+            if node.bl_idname == "ShaderNodeTexImage" and node.image is not None and node.image not in found:
+                found.append(node.image)
+            elif getattr(node, "node_tree", None) is not None:
+                stack.append(node.node_tree)
+    return found
+
+
+def object_images(objects):
+    """Every image used by the materials of ``objects``, each once."""
+    images = []
+    for obj in objects:
+        for slot in getattr(obj, "material_slots", []):
+            if slot.material is not None:
+                for img in material_images(slot.material):
+                    if img not in images:
+                        images.append(img)
+    return images
+
+
+def image_has_pixels(img):
+    """True when Blender could load pixels for ``img`` (False for a missing file)."""
+    try:
+        return img.size[0] > 0 and img.size[1] > 0
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+
+
+def renderable_geometry(scene=None, skip_roles=("backdrop", "ignore")):
+    """Geometry objects that render in ``scene``'s view layer, minus QA backdrops / ignored ones."""
+    scene = scene or bpy.context.scene
+    view_layer = bpy.context.view_layer
+    out = []
+    for obj in scene.objects:
+        if obj.type not in GEOMETRY_TYPES or obj.hide_render:
+            continue
+        try:
+            if not obj.visible_get(view_layer=view_layer):
+                continue
+        except (TypeError, RuntimeError):
+            pass
+        if obj.get("qa_role") in skip_roles:
+            continue
+        out.append(obj)
+    return out
 
 
 def world_bounds(objects):
@@ -503,11 +629,53 @@ def set_cycles_engine(scene, device="gpu"):
     return f"CYCLES/{backend or 'CPU'}"
 
 
+def set_workbench_engine(scene):
+    """Select Workbench with studio lighting and material colours.
+
+    Workbench is the fastest engine (no shader compilation) and is what
+    ``thumbnails --engine workbench`` uses. Materials show their viewport
+    display colour, which :func:`sync_viewport_colors` copies from the
+    Principled Base Color.
+    """
+    if "BLENDER_WORKBENCH" not in render_engine_identifiers(scene):
+        print("[common] Workbench is not available in this build; using EEVEE")
+        return set_eevee_engine(scene)
+    scene.render.engine = "BLENDER_WORKBENCH"
+    shading = scene.display.shading
+    shading.light = "STUDIO"
+    shading.color_type = "TEXTURE"  # image textures where present, material colour otherwise
+    for attr, value in (("show_shadows", False), ("show_cavity", False), ("show_specular_highlight", True)):
+        if hasattr(shading, attr):
+            setattr(shading, attr, value)
+    return "BLENDER_WORKBENCH"
+
+
+def sync_viewport_colors(materials=None):
+    """Copy each material's Principled Base Color into its viewport display colour.
+
+    Imported materials keep the default grey ``diffuse_color``, which is what
+    Workbench shows. Returns how many materials were updated.
+    """
+    count = 0
+    for mat in materials if materials is not None else bpy.data.materials:
+        tree = getattr(mat, "node_tree", None)
+        if tree is None:
+            continue
+        bsdf = principled(mat)
+        if bsdf is None or "Base Color" not in bsdf.inputs:
+            continue
+        mat.diffuse_color = tuple(bsdf.inputs["Base Color"].default_value)
+        count += 1
+    return count
+
+
 def set_engine(scene, name, device="gpu"):
-    """Set the engine from a friendly name (``eevee`` / ``cycles``)."""
+    """Set the engine from a friendly name (``eevee`` / ``cycles`` / ``workbench``)."""
     name = (name or "eevee").strip().lower()
     if name in {"cycles", "cyc"}:
         return set_cycles_engine(scene, device=device)
+    if name in {"workbench", "wb"}:
+        return set_workbench_engine(scene)
     return set_eevee_engine(scene)
 
 
@@ -808,23 +976,37 @@ def render_still(scene, path, fmt=None, color_mode=None):
     return path
 
 
-def run_qa(args, script, images=(), frames=None, scene=None):
+def run_qa(args, script, images=(), frames=None, scene=None, outputs=()):
     """Build, print and optionally write the QA report; honour ``--qa-strict``.
 
+    Also writes the run's summary for ``bpt --json`` (outputs, condensed QA)
+    when ``$BPT_SUMMARY`` is set. ``outputs`` lists extra files the script
+    wrote (a saved .blend, a library) next to the rendered ``images``.
     Returns the report dict (or None when neither ``--report`` nor
     ``--qa-strict`` was requested).
     """
-    if not (getattr(args, "report", None) or getattr(args, "qa_strict", False)):
-        return None
-    from lib import qa  # local import: qa pulls in bpy_extras
+    report, report_path = None, None
+    strict = bool(getattr(args, "qa_strict", False))
+    if getattr(args, "report", None) or strict:
+        from lib import qa  # local import: qa pulls in bpy_extras
 
-    scene = scene or bpy.context.scene
-    report = qa.build_scene_report(scene, script=script, images=images, frames=frames)
-    print(qa.format_text(report))
-    if args.report:
-        path = qa.write_report(report, args.report)
-        print(f"[{script}] QA report -> {path}")
-    if args.qa_strict and not report["passed"]:
+        scene = scene or bpy.context.scene
+        report = qa.build_scene_report(scene, script=script, images=images, frames=frames)
+        print(qa.format_text(report))
+        if args.report:
+            report_path = qa.write_report(report, args.report)
+            print(f"[{script}] QA report -> {report_path}")
+    failed = bool(strict and report is not None and not report["passed"])
+    if core_summary_path():
+        files = [os.path.abspath(p) for p in list(images) + [p for p in outputs if p]]
+        write_summary({
+            "script": script,
+            "status": "check_failed" if failed else "ok",
+            "outputs": list(dict.fromkeys(files)),
+            "report": report_path,
+            "qa": condense_report(report),
+        })
+    if failed:
         print(f"[{script}] QA failed and --qa-strict is set; exiting with code 3")
         raise SystemExit(3)
     return report

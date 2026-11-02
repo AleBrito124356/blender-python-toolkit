@@ -91,7 +91,7 @@ def test_presets_list_and_validation(run_blender, tmp_path):
     bad = tmp_path / "bad.yaml"
     bad.write_text("oops:\n  samples: 0\n  engine: luxcore\n", encoding="utf-8")
     run = run_blender("render_presets.py", ["--presets", bad, "--list"])
-    assert run.returncode == 1 and "oops: samples" in run.output and "oops: engine" in run.output
+    assert run.returncode == 2 and "oops: samples" in run.output and "oops: engine" in run.output  # invalid input
 
 
 def test_cleanup_keeps_normals_outward_and_reports_shared_mirrors(run_blender, fixtures_dir, tmp_path):

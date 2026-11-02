@@ -168,6 +168,30 @@ def probe_movie():
     return {"frames": clip.frame_duration, "size": list(clip.size)}
 
 
+def probe_images():
+    """Size, alpha range and border alpha of the images named by BPT_PROBE_IMAGES (os.pathsep list)."""
+    import numpy as np
+
+    out = {}
+    for path in os.environ["BPT_PROBE_IMAGES"].split(os.pathsep):
+        img = bpy.data.images.load(path, check_existing=False)
+        w, h = img.size
+        px = np.empty(w * h * img.channels, dtype=np.float32)
+        img.pixels.foreach_get(px)
+        px = px.reshape(h, w, img.channels)
+        alpha = px[..., 3] if img.channels == 4 else np.ones((h, w), dtype=np.float32)
+        border = np.concatenate([alpha[0], alpha[-1], alpha[:, 0], alpha[:, -1]])
+        out[os.path.basename(path)] = {
+            "size": [w, h], "channels": img.channels,
+            "alpha_min": float(alpha.min()), "alpha_max": float(alpha.max()),
+            "opaque_fraction": float((alpha > 0.5).mean()), "border_alpha_max": float(border.max()),
+            "mean_rgb": [float(v) for v in px[..., :3].reshape(-1, 3).mean(axis=0)],
+            "corner_rgba": [float(v) for v in px[-1, 0]],  # top-left pixel (rows are stored bottom-up)
+        }
+        bpy.data.images.remove(img)
+    return out
+
+
 def probe_scene():
     scene = bpy.context.scene
     r = scene.render

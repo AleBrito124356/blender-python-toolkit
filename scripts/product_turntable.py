@@ -1,7 +1,8 @@
 """Render a product turntable with a studio 3-point lighting rig, EEVEE-first.
 
-Imports a model (.glb/.gltf/.obj/.fbx/.stl/.ply, by extension) or falls back
-to a demo bottle. The model is centred, scaled to a 2-unit box and
+Imports a model (.glb/.gltf/.obj/.fbx/.stl/.ply/.usd/.usda/.usdc/.usdz, by
+extension, whatever this Blender build has an importer for) or falls back to a
+demo bottle. The model is centred, scaled to a 2-unit box and
 dropped so its lowest *vertex* touches the floor (measured on the evaluated
 mesh, so rotated imports and modifiers are handled). A key/fill/rim area-light
 rig and the camera orbit the product together, so the lighting stays the same
@@ -55,9 +56,7 @@ from lib.common import (  # noqa: E402
     evaluated_world_vertices,
     frame_points,
     get_argv_after_dashes,
-    look_at,
     mesh_world_bounds,
-    new_area_light,
     new_camera,
     new_world,
     parent_keep_transform,
@@ -70,8 +69,11 @@ from lib.common import (  # noqa: E402
     simple_material,
     tag_role,
 )
+from lib.core import MODEL_EXTENSIONS, fail_input  # noqa: E402
+from lib.studio import ModelImportError, normalize_objects, three_point_rig  # noqa: E402,F401
+from lib.studio import import_model as import_any_model  # noqa: E402
 
-IMPORTERS = (".glb", ".gltf", ".obj", ".fbx", ".stl", ".ply")
+IMPORTERS = MODEL_EXTENSIONS
 
 
 def parse_args(argv=None):
@@ -103,34 +105,18 @@ def parse_args(argv=None):
 
 
 def import_model(path):
-    """Import a model by extension, returning the list of new mesh objects."""
-    ext = os.path.splitext(path)[1].lower()
-    before = set(bpy.data.objects)
-    if ext in {".glb", ".gltf"}:
-        bpy.ops.import_scene.gltf(filepath=path)
-    elif ext == ".fbx":
-        bpy.ops.import_scene.fbx(filepath=path)
-    elif ext == ".obj":
-        if hasattr(bpy.ops.wm, "obj_import"):
-            bpy.ops.wm.obj_import(filepath=path)
-        else:  # Blender < 3.3
-            bpy.ops.import_scene.obj(filepath=path)
-    elif ext == ".stl":
-        if hasattr(bpy.ops.wm, "stl_import"):
-            bpy.ops.wm.stl_import(filepath=path)
-        else:
-            bpy.ops.import_mesh.stl(filepath=path)
-    elif ext == ".ply":
-        if hasattr(bpy.ops.wm, "ply_import"):
-            bpy.ops.wm.ply_import(filepath=path)
-        else:
-            bpy.ops.import_mesh.ply(filepath=path)
-    else:
-        raise SystemExit(f"Unsupported model extension {ext!r} (use {', '.join(IMPORTERS)}).")
-    new_objects = [o for o in bpy.data.objects if o not in before]
+    """Import a model by extension, returning the list of new mesh objects.
+
+    Unknown extensions, importer errors and files without meshes exit with
+    code 2 (invalid input) and a message.
+    """
+    try:
+        new_objects = import_any_model(path)
+    except ModelImportError as exc:
+        fail_input(f"[turntable] {exc}")
     meshes = [o for o in new_objects if o.type == "MESH"]
     if not meshes:
-        raise SystemExit(f"No mesh objects found in {path!r}.")
+        fail_input(f"[turntable] No mesh objects found in {path!r}.")
     return meshes
 
 
@@ -187,39 +173,6 @@ def build_demo_product(segments=64):
     return [obj]
 
 
-def normalize_objects(objects, target_size=2.0):
-    """Centre the model on the origin, scale it into ``target_size`` and put it on Z=0.
-
-    Everything is parented under one empty (keeping world transforms), so a
-    single uniform transform moves the whole model. All measurements come from
-    the evaluated vertices: object-aligned ``bound_box`` corners of a rotated
-    object overestimate its extent and made imports float above the floor.
-    """
-    pivot = bpy.data.objects.new("ProductPivot", None)
-    bpy.context.scene.collection.objects.link(pivot)
-    tops = []
-    for obj in objects:
-        top = obj
-        while top.parent is not None:
-            top = top.parent
-        if top not in tops:
-            tops.append(top)
-    for top in tops:
-        parent_keep_transform(top, pivot)
-    bpy.context.view_layer.update()
-
-    lo, hi, _, _ = mesh_world_bounds(objects)
-    size = max(hi - lo)
-    scale = target_size / size if size > 1e-9 else 1.0
-    center = (lo + hi) / 2.0
-    pivot.scale = (scale, scale, scale)
-    pivot.location = Vector((-center.x * scale, -center.y * scale, -lo.z * scale))
-    bpy.context.view_layer.update()
-    for obj in objects:
-        tag_role(obj, "subject")
-    return pivot
-
-
 def build_cyclorama(width, depth, height, radius, material):
     """Seamless studio backdrop: a floor that curves up into a back wall (+Y side)."""
     profile = [(-depth, 0.0)]
@@ -274,12 +227,8 @@ def build_studio(subjects, args):
 
     new_world("StudioWorld", color=(0.05, 0.05, 0.055), strength=1.0)
 
-    # Key: bright, front-left, high. Fill: soft, front-right, low. Rim: behind.
-    key = new_area_light("Key", center + Vector((-3.0 * d, -3.0 * d, 4.0 * d)), energy=1200.0, size=4.0 * d)
-    fill = new_area_light("Fill", center + Vector((4.0 * d, -2.0 * d, 2.0 * d)), energy=350.0, size=6.0 * d)
-    rim = new_area_light("Rim", center + Vector((0.5 * d, 4.0 * d, 3.5 * d)), energy=900.0, size=3.0 * d)
-    for light in (key, fill, rim):
-        look_at(light, center)
+    # Key: bright, front-left, high. Fill: soft, front-right, low. Rim: behind (lib.studio.RIG).
+    key, fill, rim = three_point_rig(center, d)
 
     cam = new_camera(name="TurntableCamera", lens=70.0)
     # Fit the union of the model at every orbit angle, so no frame crops it.
@@ -324,7 +273,7 @@ def main(argv=None):
     if args.model:
         model_path = os.path.abspath(args.model)
         if not os.path.exists(model_path):
-            raise SystemExit(f"Model not found: {model_path}")
+            fail_input(f"Model not found: {model_path}")
         subjects = import_model(model_path)
         print(f"[turntable] imported {len(subjects)} mesh object(s) from {model_path}")
     else:
@@ -377,7 +326,7 @@ def main(argv=None):
             images.extend(os.path.join(out_dir, f"frame_{f:04d}.png") for f in sorted({1, (last + 1) // 2, last}))
     else:
         print("[turntable] scene built (pass --render to write images)")
-    run_qa(args, "product_turntable", images=images, frames=qa_frames)
+    run_qa(args, "product_turntable", images=images, frames=qa_frames, outputs=[args.save_blend])
 
 
 if __name__ == "__main__":

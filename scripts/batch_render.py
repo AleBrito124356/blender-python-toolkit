@@ -54,9 +54,12 @@ from lib.common import (  # noqa: E402
 from lib.core import (  # noqa: E402
     IMAGE_FORMAT_EXTENSIONS,
     batch_exit_code,
+    condense_report,
+    fail_input,
     format_batch_table,
     image_extension,
     write_batch_summary,
+    write_summary,
 )
 
 
@@ -165,7 +168,7 @@ def main(argv=None):
     args = parse_args(argv)
     input_dir = os.path.abspath(args.input)
     if not os.path.isdir(input_dir):
-        raise SystemExit(f"Input folder not found: {input_dir}")
+        fail_input(f"Input folder not found: {input_dir}")
 
     out_dir = ensure_dir(os.path.abspath(args.output))
     blend_files = find_blend_files(input_dir, args.recursive)
@@ -199,6 +202,20 @@ def main(argv=None):
     })
     print(f"[batch] summary -> {json_path}")
     print(f"[batch] summary -> {csv_path}")
+    write_summary({
+        "script": "batch_render",
+        "status": "failed" if code else "ok",
+        "input": input_dir,
+        "output": out_dir,
+        "counts": {s: sum(1 for r in results if r["status"] == s) for s in ("OK", "SKIPPED", "ERROR", "QA_FAILED")},
+        "outputs": [r["output"] for r in results if r.get("output")],
+        "summary_json": json_path,
+        "summary_csv": csv_path,
+        "seconds": round(sum(float(r.get("seconds", 0.0)) for r in results), 3),
+        "results": [{"file": r["file"], "path": r.get("path"), "status": r["status"], "detail": r.get("detail"),
+                     "output": r.get("output"), "seconds": round(float(r.get("seconds", 0.0)), 3),
+                     "error": r.get("error"), "qa": condense_report(r.get("qa"))} for r in results],
+    })
     if code:
         print(f"[batch] exiting with code {code} (errors{' or skipped files' if args.strict else ''})")
     sys.stdout.flush()

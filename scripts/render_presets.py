@@ -59,7 +59,9 @@ from lib.common import (  # noqa: E402
 )
 from lib.core import (  # noqa: E402
     PresetError,
+    fail_input,
     image_extension,
+    write_summary,
     load_presets_text,
     parse_simple_yaml,  # noqa: F401  (kept importable for older callers)
     swap_extension,
@@ -93,13 +95,13 @@ def parse_args(argv=None):
 def load_presets(path):
     """Load and validate presets; returns ``(presets, parser_name)``."""
     if not os.path.exists(path):
-        raise SystemExit(f"Presets file not found: {path}")
+        fail_input(f"Presets file not found: {path}")
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     try:
         return load_presets_text(text)
     except PresetError as exc:
-        raise SystemExit(f"[presets] {path}: {exc}") from None
+        fail_input(f"[presets] {path}: {exc}")
 
 
 def apply_preset(scene, preset):
@@ -159,12 +161,12 @@ def main(argv=None):
         return
 
     if args.preset not in presets:
-        raise SystemExit(f"Unknown preset {args.preset!r}. Available: {', '.join(presets)}")
+        fail_input(f"Unknown preset {args.preset!r}. Available: {', '.join(presets)}")
     if not args.input:
-        raise SystemExit("--input is required unless you pass --list.")
+        fail_input("--input is required unless you pass --list.")
     input_path = os.path.abspath(args.input)
     if not os.path.exists(input_path):
-        raise SystemExit(f"Input .blend not found: {input_path}")
+        fail_input(f"Input .blend not found: {input_path}")
 
     bpy.ops.wm.open_mainfile(filepath=input_path)
     scene = bpy.context.scene
@@ -180,6 +182,7 @@ def main(argv=None):
           f"engine={applied['engine']}, samples={applied['samples']}, "
           f"view_transform={applied['view_transform']}, format={applied['format']}")
 
+    target = None
     if args.save or args.in_place:
         if args.in_place:
             target = input_path
@@ -194,7 +197,7 @@ def main(argv=None):
     images = []
     if args.render:
         if scene.camera is None:
-            raise SystemExit("Scene has no active camera to render from.")
+            fail_input("Scene has no active camera to render from.")
         ext = image_extension(applied["format"])
         if args.out:
             out_path = os.path.abspath(args.out)
@@ -210,7 +213,10 @@ def main(argv=None):
         bpy.ops.render.render(write_still=True)
         print(f"[presets] wrote {out_path}")
         images.append(out_path)
-        run_qa(args, "render_presets", images=images)
+        run_qa(args, "render_presets", images=images, outputs=[target])
+    else:
+        write_summary({"script": "render_presets", "status": "ok", "preset": args.preset,
+                       "outputs": [target] if target else [], "qa": None})
 
 
 if __name__ == "__main__":
