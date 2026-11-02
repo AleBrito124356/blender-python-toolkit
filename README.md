@@ -504,7 +504,12 @@ if __name__ == "__main__":
 
 ## Related projects
 
-Part of a set of tools by the same author:
+Three Blender projects by the same author fit together:
+
+- **[Astra Blender Harness](https://github.com/AleBrito124356/astra-blender-harness)**: guarded Blender for AI agents and models. An MCP server for Claude Code, Codex or Cursor (or a studio with your own API key) that builds scenes in an open or headless Blender, checks every model-written script, audits the scene after each edit and shows it in a live 3D viewer. Use it to make a scene; use `bpt` to render, export and thumbnail it.
+- **[Blender Quality Lab](https://github.com/AleBrito124356/blender-quality-lab)**: vision-free scene inspection with technical gates and ready-to-run fixes, a GitHub Action for `.blend` files, and evaluation tooling. Run it on what an agent or a script produced before it ships.
+
+Other tools by the same author:
 
 - **[python-automation-toolbox](https://github.com/AleBrito124356/python-automation-toolbox)**: 20 standalone Python automation scripts for real life, each self-contained with `argparse` and zero shared state. The general-purpose counterpart to this 3D-focused toolkit.
 - **[remotion-video-templates](https://github.com/AleBrito124356/remotion-video-templates)**: six programmatic video templates in React/Remotion, including data-driven charts. Feed the same data into a video.
