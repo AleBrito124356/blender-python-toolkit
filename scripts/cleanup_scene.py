@@ -41,7 +41,7 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib.common import get_argv_after_dashes  # noqa: E402
-from lib.core import TYPE_PREFIX, plan_prefix_renames  # noqa: E402,F401  (TYPE_PREFIX re-exported)
+from lib.core import TYPE_PREFIX, fail_input, plan_prefix_renames  # noqa: E402,F401  (TYPE_PREFIX re-exported)
 
 
 def parse_args(argv=None):
@@ -203,7 +203,7 @@ def main(argv=None):
     args = parse_args(argv)
     input_path = os.path.abspath(args.input)
     if not os.path.exists(input_path):
-        raise SystemExit(f"Input .blend not found: {input_path}")
+        fail_input(f"Input .blend not found: {input_path}")
 
     bpy.ops.wm.open_mainfile(filepath=input_path)
     before = count_datablocks()
@@ -238,7 +238,7 @@ def main(argv=None):
         if args.output:
             out_path = os.path.abspath(args.output)
             if os.path.exists(out_path):
-                raise SystemExit(f"Refusing to overwrite existing file: {out_path}")
+                fail_input(f"Refusing to overwrite existing file: {out_path}")
         else:
             out_path = unique_output_path(input_path)
         bpy.ops.wm.save_as_mainfile(filepath=out_path)

@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.3.0 - 2026-11-02
+
+Tested on `bpy` 5.2.3 LTS from PyPI (Python 3.13, Ubuntu 24.04, EEVEE and
+Workbench through software EGL, Cycles on the CPU). No Blender executable was
+available for this release, so the executable path of the new code is covered
+by the shim's emulation of Blender's command line
+(`tests/blender/test_runtime.py`), not by a run on Blender itself; 0.2.0 was
+tested on Blender 5.2.1 LTS (Windows 11).
+
+### Added
+
+- **No Blender install needed.** `bpt` runs every command through a Python
+  interpreter that can `import bpy` (`pip install bpy`) as well as through a
+  Blender executable. `--blender` and `BLENDER_EXE` accept either kind
+  (detected from the file name, or `PATH --version`); discovery falls back to
+  `BLENDER_PYTHON` and then to the interpreter running `bpt`.
+  `bpt/blender_shim.py` emulates `blender --background --factory-startup
+  --python-exit-code 1 [file.blend] --python script.py -- args` on the module
+  (argument order, factory settings or, without `--factory-startup`, the
+  user's preferences and startup file, which `import bpy` alone does not
+  load; `.blend` loading without embedded scripts, `sys.argv` set before
+  `import bpy`, exit codes). `bpt doctor`
+  reports the runtime kind, glTF / Draco / USD export support and libEGL;
+  `bpt --dry-run` prints the shim command.
+- **`bpt export`** (`scripts/export_web.py`): a .blend or a model
+  (.glb/.gltf/.obj/.fbx/.stl/.ply/.usd/.usda/.usdc/.usdz) to a +Y-up `.glb`
+  and optionally a `.usdz`, with `--max-triangles N` / `--decimate RATIO`,
+  `--texture-max SIZE`, `--image-format auto|jpeg|webp`, `--draco [LEVEL]`,
+  `--no-apply-modifiers`, `--animations`. Writes a JSON report (triangles,
+  vertices and surface area before and after, file sizes, bounds in metres,
+  materials, textures and their sizes, warnings) and verifies every file by
+  re-importing it into an empty scene, plus a byte-level read of the `.glb`
+  (triangles, Draco extension, embedded texture sizes). Exit code 3 when a
+  check fails.
+- **`bpt thumbnails`** (`scripts/thumbnails.py`): a folder of models and
+  .blend files to square PNG thumbnails with the turntable's normalisation and
+  light rig, `--engine eevee|workbench|cycles`, transparent or solid
+  `--background`, a labelled contact sheet and `index.json` (file, thumbnail,
+  bounds, triangles, status, error, missing textures, image QA). Broken files
+  are recorded and skipped; `--strict` exits 1.
+- **`bpt --json`**: one JSON object on stdout (status, exit code, timings,
+  runtime, and the script's summary: outputs, condensed QA, per-file results
+  for batch / thumbnails) with all logs on stderr and the log tail included
+  on failure. Every script writes its summary to `$BPT_SUMMARY`
+  (`lib.core.write_summary`).
+- `skills/blender-toolkit/SKILL.md`: an Agent Skill that teaches an AI agent
+  when and how to use `bpt` headlessly and how to read its JSON.
+- `bpt run missing.py` exits 2 (invalid input) and answers in JSON with
+  `--json`.
+- `.github/workflows/ci.yml`: unit tests on Python 3.9 and 3.13, and the
+  Blender integration suite on `pip install bpy` with libEGL on Ubuntu.
+- `lib/studio.py`: model import for every format the build supports,
+  normalisation and the 3-point rig (now turnable to any camera azimuth),
+  shared by the turntable and thumbnails. `lib.common`: `mesh_stats`,
+  `bounds_dict`, `renderable_geometry`, `set_workbench_engine`,
+  `object_images`. `lib.core`: GLB reading, image-size sniffing (PNG, JPEG,
+  WebP), round-trip checks, exit-code constants, `fail_input`, contact-sheet
+  layout and a 5x7 bitmap font.
+- `product_turntable --model` also imports `.usd`, `.usda`, `.usdc` and
+  `.usdz`.
+
+### Fixed (found while building the export, each covered by a test)
+
+- Blender's glTF exporter writes an uncompressed file, without an error,
+  when its Draco library is missing (the PyPI `bpy` 5.2 wheel ships without
+  `libbf_intern_draco_bridge`). `bpt export --draco` refuses with exit code 2
+  on such builds and checks the extension in the written file otherwise.
+- `Image.scale()` does not mark an image as modified, so the glTF exporter
+  re-reads the original file and ships the full-size texture. Downscaled
+  textures are written as new images instead, and the embedded sizes are
+  read back from the `.glb`.
+- Decimating an imported mesh deleted whole triangles (holes, half the
+  surface area) because the glTF importer leaves a flat-shaded mesh as one
+  island per triangle. A Weld modifier now runs before the Decimate.
+- Loose vertices are not exported, so the report's bounds count only
+  vertices that belong to a face.
+- The USD exporter writes bevelled curves as USD curves and subdivision as a
+  scheme, so a `.usdz` would not hold the triangles of the `.glb`: curves and
+  text are baked to meshes first and USD tessellates subdivision.
+- The turntable chose its OBJ / STL / PLY importer with
+  `hasattr(bpy.ops.wm, ...)`, which is true for any name, so the fallbacks
+  for older Blender versions could never run. `lib.studio` asks for the
+  operator's RNA instead (`bpt doctor` and the export's USD check too).
+
+### Changed
+
+- **Invalid input exits with code 2** in every script (missing input file
+  or folder, unsupported or unreadable model, invalid preset file, unknown
+  preset, refusing to overwrite). It was 1, which is now reserved for errors
+  and failed files. Exit codes: 0 ok, 1 failed, 2 invalid input, 3 a check
+  failed.
+- `lib.common.run_qa` takes `outputs=` (extra files the script wrote) for
+  the JSON summary.
+- The Blender test fixtures run against either runtime (`blender_cmd`
+  fixture); video tests skip when the build has no FFmpeg.
+
 ## 0.2.0
 
 Tested on Blender 5.2.1 LTS (Windows 11, Intel UHD 770, EEVEE and Cycles/CPU).

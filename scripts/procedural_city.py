@@ -286,7 +286,7 @@ def main(argv=None):
         print(f"[procedural_city] rendering with {engine} -> {os.path.abspath(args.out)}")
         images.append(render_still(scene, args.out))
         print(f"[procedural_city] wrote {images[-1]}")
-    run_qa(args, "procedural_city", images=images)
+    run_qa(args, "procedural_city", images=images, outputs=[args.save_blend])
 
 
 if __name__ == "__main__":

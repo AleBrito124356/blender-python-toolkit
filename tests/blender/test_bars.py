@@ -79,7 +79,7 @@ def test_strict_csv_fails_on_skipped_rows(run_blender, tmp_path):
     assert strict.returncode == 2
 
 
-def test_grow_in_animation_is_eased_and_renders_to_mp4(run_blender, sales_csv, tmp_path):
+def test_grow_in_animation_is_eased_and_renders_to_mp4(run_blender, sales_csv, tmp_path, needs_ffmpeg):
     out = tmp_path / "bars.png"
     run = run_blender("csv_to_bars3d.py", ["--csv", sales_csv, "--animate", "--frames", 12, "--render",
                                            "--video", "mp4", "--res", "160x90", "--samples", 1, "--out", out],

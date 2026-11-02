@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blender-python-toolkit"
-version = "0.2.0"
-description = "Headless Blender automation: procedural scenes, turntables, batch rendering, 3D charts, scene hygiene and render QA, with a one-command launcher (bpt)."
+version = "0.3.0"
+description = "Headless Blender automation with or without a Blender install (pip install bpy): web/AR export with verification, asset thumbnails, turntables, batch rendering, 3D charts, scene hygiene and render QA, with a JSON-speaking launcher (bpt)."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Alejandro Brito" }]
-keywords = ["blender", "bpy", "headless", "rendering", "automation", "eevee", "qa"]
+keywords = ["blender", "bpy", "headless", "rendering", "automation", "eevee", "qa", "gltf", "usdz", "thumbnails"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Multimedia :: Graphics :: 3D Rendering",
@@ -32,5 +32,5 @@ packages = ["bpt"]
 testpaths = ["tests"]
 addopts = "-ra"
 markers = [
-    "blender: runs the toolkit inside a real Blender (BLENDER_EXE or auto-discovery); skipped when none is found",
+    "blender: runs the toolkit in a Blender executable or a Python with bpy (BLENDER_EXE or auto-discovery); skipped when none is found",
 ]

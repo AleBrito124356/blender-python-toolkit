@@ -60,6 +60,7 @@ from lib.common import (  # noqa: E402
     set_input,
     simple_material,
     tag_role,
+    write_summary,
 )
 
 
@@ -333,7 +334,9 @@ def main(argv=None):
         images.append(render_still(scene, args.preview))
         print(f"[materials] wrote {images[-1]}")
     if args.spheres or args.render:
-        run_qa(args, "material_library", images=images)
+        run_qa(args, "material_library", images=images, outputs=[out_path])
+    else:
+        write_summary({"script": "material_library", "status": "ok", "outputs": [out_path], "qa": None})
 
 
 if __name__ == "__main__":

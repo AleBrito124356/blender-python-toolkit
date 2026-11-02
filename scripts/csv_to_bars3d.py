@@ -73,6 +73,7 @@ from lib.common import (  # noqa: E402
     tag_role,
 )
 from lib.core import (  # noqa: E402
+    fail_input,
     CsvError,
     chart_height_for,
     axis_ticks,
@@ -281,11 +282,11 @@ def main(argv=None):
     args = parse_args(argv)
     csv_path = os.path.abspath(args.csv)
     if not os.path.exists(csv_path):
-        raise SystemExit(f"CSV not found: {csv_path}")
+        fail_input(f"CSV not found: {csv_path}")
     try:
         data = read_label_value_csv(csv_path, args.label_col, args.value_col, args.delimiter)
     except CsvError as exc:
-        raise SystemExit(f"[bars3d] {exc}") from None
+        fail_input(f"[bars3d] {exc}")
     for line_no, reason in data.skipped:
         print(f"[bars3d] skipped line {line_no}: {reason}")
     if data.skipped and args.strict_csv:
@@ -338,7 +339,7 @@ def main(argv=None):
             images.append(f"{stem}{args.frames:04d}.png")
             print(f"[bars3d] wrote {args.frames} frames")
     run_qa(args, "csv_to_bars3d", images=images,
-           frames=[scene.frame_end] if args.animate else None)
+           frames=[scene.frame_end] if args.animate else None, outputs=[args.save_blend])
 
 
 if __name__ == "__main__":

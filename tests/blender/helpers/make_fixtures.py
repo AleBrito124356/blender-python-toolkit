@@ -17,6 +17,10 @@ Files written:
     qa_black.blend  lit-less scene with a black world
     qa_float.blend  sphere hovering 1 unit above a ground plane
     qa_good.blend   sphere resting on a ground plane, lit and framed
+    textured.blend  subdivided ball with a packed 512x256 texture, a text label and a floor tagged
+                    qa_role=backdrop (export / thumbnail input)
+    missing_tex.blend  a cube whose material points at an image file that does not exist
+    models/         cone.obj (+ .mtl), torus.stl and broken.glb (random bytes): thumbnail inputs
 """
 
 import os
@@ -168,3 +172,66 @@ sphere(2.0)  # lowest point at z=1: floating
 add_light()
 add_camera((0.0, -10.0, 3.5), target=(0.0, 0.0, 1.5))
 save("qa_float.blend")
+
+# Export / thumbnail inputs ----------------------------------------------------
+reset()
+world()
+img = bpy.data.images.new("Checker", 512, 256, alpha=True)
+img.generated_type = "COLOR_GRID"
+img.pack()
+bpy.ops.mesh.primitive_uv_sphere_add(radius=0.5, segments=32, ring_count=16, location=(0.0, 0.0, 0.5))
+ball = bpy.context.active_object
+ball.name = "Ball"
+ball.modifiers.new("Subdivision", "SUBSURF").levels = 1
+mat = bpy.data.materials.new("Painted")
+if mat.node_tree is None:
+    mat.use_nodes = True
+tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
+tex.image = img
+bsdf = next(n for n in mat.node_tree.nodes if n.bl_idname == "ShaderNodeBsdfPrincipled")
+mat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+ball.data.materials.append(mat)
+bpy.ops.object.text_add(location=(-0.4, -0.8, 0.0))
+label = bpy.context.active_object
+label.name = "Label"
+label.data.body = "Hi"
+label.data.extrude = 0.02
+ground()
+bpy.context.active_object["qa_role"] = "backdrop"
+add_light()
+add_camera((0.0, -6.0, 2.5), target=(0.0, 0.0, 0.5))
+save("textured.blend")
+
+reset()
+world()
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 0.5))
+missing = bpy.data.images.new("Gone", 8, 8)
+missing.source = "FILE"
+missing.filepath = "//textures/does_not_exist.png"
+mat = bpy.data.materials.new("Broken")
+if mat.node_tree is None:
+    mat.use_nodes = True
+tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
+tex.image = missing
+bsdf = next(n for n in mat.node_tree.nodes if n.bl_idname == "ShaderNodeBsdfPrincipled")
+mat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+bpy.context.active_object.data.materials.append(mat)
+save("missing_tex.blend")
+
+MODELS = os.path.join(OUT, "models")
+os.makedirs(MODELS, exist_ok=True)
+reset()
+bpy.ops.mesh.primitive_cone_add(radius1=1.0, depth=2.0)  # 32 segments: 62 triangles
+cone_mat = bpy.data.materials.new("Red")
+if cone_mat.node_tree is None:
+    cone_mat.use_nodes = True
+next(n for n in cone_mat.node_tree.nodes if n.bl_idname == "ShaderNodeBsdfPrincipled").inputs[
+    "Base Color"].default_value = (0.8, 0.1, 0.05, 1.0)
+bpy.context.active_object.data.materials.append(cone_mat)
+bpy.ops.wm.obj_export(filepath=os.path.join(MODELS, "cone.obj"))
+reset()
+bpy.ops.mesh.primitive_torus_add(major_radius=1.0, minor_radius=0.3)  # 48 x 12 segments: 1152 triangles
+bpy.ops.wm.stl_export(filepath=os.path.join(MODELS, "torus.stl"))
+with open(os.path.join(MODELS, "broken.glb"), "wb") as fh:
+    fh.write(b"glTF but not really " * 32)
+print("FIXTURE", MODELS)

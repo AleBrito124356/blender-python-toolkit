@@ -1,8 +1,10 @@
 """Fixtures for the headless-Blender integration tests.
 
-Blender is found with the same discovery as ``bpt`` (``BLENDER_EXE`` first).
-When none is found every test in this folder is skipped, so ``pytest`` still
-passes on machines without Blender.
+Blender is found with the same discovery as ``bpt`` (``BLENDER_EXE`` first),
+so the suite runs against a Blender executable or a Python interpreter with
+the ``bpy`` module (``BLENDER_EXE=/path/to/venv/bin/python``), whose commands
+go through ``bpt/blender_shim.py``. When none is found every test in this
+folder is skipped, so ``pytest`` still passes on machines without Blender.
 
 ``BPT_TOOLKIT_ROOT`` points the tests at another checkout of the toolkit (for
 example the previous release) while keeping these tests and helpers; that is
@@ -17,6 +19,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from bpt.cli import runtime_prefix
 from bpt.discovery import BlenderNotFound, find_blender
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -38,11 +41,48 @@ class BlenderRun:
 
 
 @pytest.fixture(scope="session")
-def blender_exe():
+def blender_runtime():
     try:
-        return find_blender().path
+        return find_blender()
     except BlenderNotFound as exc:
         pytest.skip(f"Blender not available: {exc}")
+
+
+@pytest.fixture(scope="session")
+def blender_exe(blender_runtime):
+    return blender_runtime.path
+
+
+@pytest.fixture(scope="session")
+def blender_cmd(blender_runtime):
+    """``[blender]`` or ``[python, bpt/blender_shim.py]``: put Blender arguments after it."""
+    return runtime_prefix(blender_runtime.path, blender_runtime.kind)
+
+
+CAPS_EXPR = (
+    "import json, bpy; print('BPT_CAPS=' + json.dumps({"
+    "'ffmpeg': bool(getattr(getattr(bpy.app, 'ffmpeg', None), 'supported', False)), "
+    "'usd': bool(getattr(bpy.app.build_options, 'usd', False)), "
+    "'version': list(bpy.app.version)}))"
+)
+
+
+@pytest.fixture(scope="session")
+def blender_caps(blender_cmd):
+    """What this Blender build can do (FFmpeg, USD), probed once per session."""
+    proc = subprocess.run(blender_cmd + ["--background", "--factory-startup", "--python-exit-code", "1",
+                                         "--python-expr", CAPS_EXPR],
+                          capture_output=True, text=True, timeout=TIMEOUT, encoding="utf-8", errors="replace")
+    for line in proc.stdout.splitlines():
+        if line.startswith("BPT_CAPS="):
+            return json.loads(line[len("BPT_CAPS="):])
+    raise AssertionError(proc.stdout[-2000:] + proc.stderr[-2000:])
+
+
+@pytest.fixture
+def needs_ffmpeg(blender_caps):
+    if not blender_caps["ffmpeg"]:
+        pytest.skip("this Blender build has no FFmpeg (video output)")
 
 
 @pytest.fixture(scope="session")
@@ -51,7 +91,7 @@ def toolkit_root():
 
 
 @pytest.fixture
-def run_blender(blender_exe, tmp_path):
+def run_blender(blender_cmd, tmp_path):
     """Run a toolkit script (and optional probes) in a fresh headless Blender.
 
     ``script``: file name under ``scripts/`` (or None); ``args``: the script's
@@ -62,7 +102,7 @@ def run_blender(blender_exe, tmp_path):
 
     def run(script=None, args=(), blend=None, probes=(), env=None, extra_python=()):
         counter["n"] += 1
-        cmd = [blender_exe, "--background", "--factory-startup"]
+        cmd = blender_cmd + ["--background", "--factory-startup"]
         if blend is not None:
             cmd.append(str(blend))
         cmd += ["--python-exit-code", "1"]
@@ -87,12 +127,12 @@ def run_blender(blender_exe, tmp_path):
 
 
 @pytest.fixture(scope="session")
-def fixtures_dir(blender_exe, tmp_path_factory):
+def fixtures_dir(blender_cmd, tmp_path_factory):
     """Generate the .blend/.glb fixtures once per session (nothing binary is committed)."""
     out = tmp_path_factory.mktemp("fixtures")
     proc = subprocess.run(
-        [blender_exe, "--background", "--factory-startup", "--python-exit-code", "1",
-         "--python", str(HELPERS / "make_fixtures.py"), "--", str(out)],
+        blender_cmd + ["--background", "--factory-startup", "--python-exit-code", "1",
+                       "--python", str(HELPERS / "make_fixtures.py"), "--", str(out)],
         capture_output=True, text=True, timeout=TIMEOUT, encoding="utf-8", errors="replace")
     assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
     return out

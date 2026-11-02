@@ -915,6 +915,9 @@ def _check(check_id, status, message, **extra):
     return item
 
 
+make_check = _check  # public name: ``make_check("id", "pass", "message", value=1)``
+
+
 def evaluate_composition(composition, thresholds=None):
     """Turn measured composition facts into pass/warn/fail checks.
 
@@ -1159,4 +1162,516 @@ def format_report_text(report):
         if names and check["status"] in ("fail", "warn"):
             shown = ", ".join(names[:8]) + (f" (+{len(names) - 8} more)" if len(names) > 8 else "")
             lines.append(f"         -> {shown}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Exit codes and machine-readable summaries (bpt --json)
+# ---------------------------------------------------------------------------
+
+EXIT_OK = 0
+EXIT_FAILED = 1           # Python/Blender error, or files that failed in a batch
+EXIT_INVALID_INPUT = 2    # bad flags, missing/unsupported input, a request this build cannot do
+EXIT_CHECK_FAILED = 3     # outputs written but a check failed (--qa-strict QA, export round trip)
+
+SUMMARY_ENV = "BPT_SUMMARY"
+
+
+def fail_input(message, stream=None):
+    """Print ``message`` to stderr and exit with code 2 (invalid input)."""
+    print(message, file=stream or sys.stderr)
+    (stream or sys.stderr).flush()
+    raise SystemExit(EXIT_INVALID_INPUT)
+
+
+def summary_path(env=None):
+    """Where ``bpt --json`` wants the script's summary (``$BPT_SUMMARY``), or None."""
+    return (os.environ if env is None else env).get(SUMMARY_ENV) or None
+
+
+def write_summary(payload, path=None, env=None):
+    """Write the run's summary object for ``bpt --json``; no-op when not requested.
+
+    Returns the path written or None. The last call wins, so a script may
+    write a partial summary early and the complete one at the end.
+    """
+    path = path or summary_path(env)
+    if not path:
+        return None
+    data = {"tool": "blender-python-toolkit"}
+    data.update(payload)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, default=str)
+    return path
+
+
+def condense_report(report):
+    """A QA report reduced to its verdict and one line per check (for summaries)."""
+    if not report:
+        return None
+    checks = []
+    for c in report.get("checks", []):
+        item = {"id": c["id"], "status": c["status"], "message": c["message"]}
+        if c.get("image"):
+            item["image"] = c["image"]
+        checks.append(item)
+    return {
+        "passed": report.get("passed"),
+        "status": report.get("status"),
+        "counts": report.get("counts"),
+        "failing": [c["id"] for c in checks if c["status"] == "fail"],
+        "checks": checks,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Model files
+# ---------------------------------------------------------------------------
+
+MODEL_EXTENSIONS = (".glb", ".gltf", ".obj", ".fbx", ".stl", ".ply", ".usd", ".usda", ".usdc", ".usdz")
+SCENE_EXTENSIONS = (".blend",)
+
+
+def find_inputs(folder, extensions, recursive=False):
+    """Sorted files under ``folder`` whose extension (any case) is in ``extensions``.
+
+    Hidden files and Blender backups (``.blend1``) are skipped.
+    """
+    extensions = {e.lower() for e in extensions}
+    out = []
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in files:
+            if name.startswith("."):
+                continue
+            if os.path.splitext(name)[1].lower() in extensions:
+                out.append(os.path.join(root, name))
+        if not recursive:
+            break
+    return sorted(out, key=lambda p: os.path.relpath(p, folder).lower())
+
+
+def thumbnail_names(paths, root=None, ext=".png"):
+    """Unique, readable output names for ``paths`` (``chair.glb`` -> ``chair.png``).
+
+    Files sharing a stem get their extension added (``chair_glb.png``,
+    ``chair_obj.png``); files that still collide (same name in different
+    subfolders) get their relative folder too. Returns ``{path: name}``.
+    """
+    paths = list(paths)
+
+    def stem(p):
+        return os.path.splitext(os.path.basename(p))[0]
+
+    def safe(text):
+        return re.sub(r"[^\w.\-]+", "_", text).strip("_") or "model"
+
+    by_stem = {}
+    for p in paths:
+        by_stem.setdefault(stem(p).lower(), []).append(p)
+    names, taken = {}, set()
+    for p in paths:
+        if len(by_stem[stem(p).lower()]) == 1:
+            name = safe(stem(p))
+        else:
+            name = safe(f"{stem(p)}_{os.path.splitext(p)[1].lstrip('.').lower()}")
+            if root and name.lower() in taken:
+                rel = os.path.splitext(os.path.relpath(p, root))[0]
+                name = safe(rel.replace(os.sep, "__").replace("/", "__") + "_" + os.path.splitext(p)[1].lstrip("."))
+        base, n = name, 1
+        while name.lower() in taken:
+            name = f"{base}_{n:02d}"
+            n += 1
+        taken.add(name.lower())
+        names[p] = name + ext
+    return names
+
+
+def parse_background(text):
+    """``transparent`` / ``none`` -> None; ``#RRGGBB`` / ``#RGB`` / white / black -> sRGB (r, g, b) in 0..1."""
+    value = str(text).strip().lower()
+    if value in {"transparent", "none", "alpha"}:
+        return None
+    named = {"white": "ffffff", "black": "000000", "gray": "808080", "grey": "808080"}
+    h = named.get(value, value).lstrip("#")
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    if len(h) != 6 or any(ch not in "0123456789abcdef" for ch in h):
+        raise ValueError(f"background must be 'transparent' or a colour like '#20242a', got {text!r}")
+    return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
+def contact_sheet_layout(count, cell, columns=None, pad=8, label_height=0):
+    """Grid geometry for a contact sheet of ``count`` square cells.
+
+    Returns a dict with ``columns``, ``rows``, ``width``, ``height`` and
+    ``cells``: the top-left ``(x, y)`` of each image, y measured from the top.
+    The column count defaults to ``ceil(sqrt(count))``.
+    """
+    count = max(int(count), 0)
+    cols = int(columns) if columns else max(1, math.ceil(math.sqrt(count or 1)))
+    cols = max(1, min(cols, max(count, 1)))
+    rows = max(1, math.ceil(count / cols)) if count else 1
+    width = cols * cell + (cols + 1) * pad
+    height = rows * (cell + label_height) + (rows + 1) * pad
+    cells = []
+    for i in range(count):
+        r, c = divmod(i, cols)
+        cells.append((pad + c * (cell + pad), pad + r * (cell + label_height + pad)))
+    return {"columns": cols, "rows": rows, "width": width, "height": height, "cells": cells}
+
+
+# A 5x7 bitmap font for contact-sheet labels (no font files or PIL needed in
+# Blender's Python). Each glyph is 7 rows of 5 bits, most significant bit left.
+_GLYPHS = {
+    "A": (0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11), "B": (0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E),
+    "C": (0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E), "D": (0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E),
+    "E": (0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F), "F": (0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10),
+    "G": (0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F), "H": (0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11),
+    "I": (0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E), "J": (0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C),
+    "K": (0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11), "L": (0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F),
+    "M": (0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11), "N": (0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11),
+    "O": (0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E), "P": (0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10),
+    "Q": (0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D), "R": (0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11),
+    "S": (0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E), "T": (0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04),
+    "U": (0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E), "V": (0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04),
+    "W": (0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A), "X": (0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11),
+    "Y": (0x11, 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04), "Z": (0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F),
+    "0": (0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E), "1": (0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E),
+    "2": (0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F), "3": (0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E),
+    "4": (0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02), "5": (0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E),
+    "6": (0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E), "7": (0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08),
+    "8": (0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E), "9": (0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C),
+    ".": (0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C), "-": (0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00),
+    "_": (0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F), "(": (0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02),
+    ")": (0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08), " ": (0x00,) * 7,
+    "?": (0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04), "!": (0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04),
+    "+": (0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00), "=": (0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00),
+    "/": (0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10), ":": (0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00),
+    ",": (0x00, 0x00, 0x00, 0x00, 0x0C, 0x04, 0x08), "#": (0x0A, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x0A),
+}
+GLYPH_W, GLYPH_H = 5, 7
+
+
+def elide_middle(text, max_chars):
+    """Shorten ``text`` to ``max_chars`` by replacing its middle with ``..``."""
+    text = str(text)
+    if max_chars < 4 or len(text) <= max_chars:
+        return text[:max(max_chars, 0)] if len(text) > max_chars else text
+    keep = max_chars - 2
+    head = (keep + 1) // 2
+    return text[:head] + ".." + text[len(text) - (keep - head):]
+
+
+def text_bitmap(text):
+    """Rows (top to bottom) of 0/1 pixels for ``text`` in the 5x7 font.
+
+    Letters are drawn upper-case; characters without a glyph become ``?``.
+    Glyphs are separated by one blank column. Width = 6 * len(text) - 1.
+    """
+    text = str(text).upper()
+    if not text:
+        return [[] for _ in range(GLYPH_H)]
+    rows = [[] for _ in range(GLYPH_H)]
+    for i, ch in enumerate(text):
+        glyph = _GLYPHS.get(ch, _GLYPHS["?"])
+        for r in range(GLYPH_H):
+            if i:
+                rows[r].append(0)
+            bits = glyph[r]
+            rows[r].extend((bits >> (GLYPH_W - 1 - b)) & 1 for b in range(GLYPH_W))
+    return rows
+
+
+def thumbnails_exit_code(entries, strict=False):
+    """0, or 1 with ``strict`` when any entry is not ``ok`` (or nothing was found)."""
+    if not strict:
+        return EXIT_OK
+    if not entries or any(e.get("status") != "ok" for e in entries):
+        return EXIT_FAILED
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# glTF / GLB inspection and web-export maths (scripts/export_web.py)
+# ---------------------------------------------------------------------------
+
+
+class GltfError(ValueError):
+    """Raised for files that are not valid glTF 2.0 binaries."""
+
+
+_GLB_JSON, _GLB_BIN = 0x4E4F534A, 0x004E4942
+
+
+def read_glb(data):
+    """Split a GLB (binary glTF 2.0) into ``(json_dict, bin_chunk_bytes)``."""
+    import struct
+
+    data = bytes(data)
+    if len(data) < 20 or data[:4] != b"glTF":
+        raise GltfError("not a GLB file (missing 'glTF' magic)")
+    version, length = struct.unpack_from("<II", data, 4)
+    if version != 2:
+        raise GltfError(f"GLB version {version} is not supported (glTF 2.0 only)")
+    if length > len(data):
+        raise GltfError(f"GLB is truncated: header says {length} bytes, file has {len(data)}")
+    offset, doc, binary = 12, None, b""
+    while offset + 8 <= length:
+        chunk_len, chunk_type = struct.unpack_from("<II", data, offset)
+        chunk = data[offset + 8: offset + 8 + chunk_len]
+        if chunk_type == _GLB_JSON and doc is None:
+            try:
+                doc = json.loads(chunk.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise GltfError(f"GLB JSON chunk is invalid: {exc}") from None
+        elif chunk_type == _GLB_BIN and not binary:
+            binary = chunk
+        offset += 8 + chunk_len
+    if doc is None:
+        raise GltfError("GLB has no JSON chunk")
+    return doc, binary
+
+
+def image_size(data):
+    """``(format, width, height)`` of PNG / JPEG / WebP bytes, or None."""
+    import struct
+
+    data = bytes(data[:65536]) if len(data) > 65536 else bytes(data)
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        w, h = struct.unpack(">II", data[16:24])
+        return "PNG", w, h
+    if data[:3] == b"\xff\xd8\xff":
+        i = 2
+        while i + 9 < len(data):
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            marker = data[i + 1]
+            if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7 or marker == 0xFF:
+                i += 2 if marker != 0xFF else 1
+                continue
+            seg_len = struct.unpack(">H", data[i + 2:i + 4])[0]
+            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                return "JPEG", w, h
+            i += 2 + seg_len
+        return None
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        kind = data[12:16]
+        if kind == b"VP8 " and len(data) >= 30:
+            w, h = struct.unpack("<HH", data[26:30])
+            return "WEBP", w & 0x3FFF, h & 0x3FFF
+        if kind == b"VP8L" and len(data) >= 25:
+            b = data[21:25]
+            w = 1 + (((b[1] & 0x3F) << 8) | b[0])
+            h = 1 + (((b[3] & 0x0F) << 10) | (b[2] << 2) | ((b[1] & 0xC0) >> 6))
+            return "WEBP", w, h
+        if kind == b"VP8X" and len(data) >= 30:
+            w = 1 + int.from_bytes(data[24:27], "little")
+            h = 1 + int.from_bytes(data[27:30], "little")
+            return "WEBP", w, h
+    return None
+
+
+def _mesh_instances(doc):
+    """``{mesh_index: instance_count}`` over the default scene's node trees."""
+    nodes = doc.get("nodes", [])
+    scenes = doc.get("scenes", [])
+    if scenes:
+        roots = list(scenes[doc.get("scene", 0)].get("nodes", []))
+    else:  # no scene: every node that is nobody's child
+        children = {c for n in nodes for c in n.get("children", [])}
+        roots = [i for i in range(len(nodes)) if i not in children]
+    counts, stack, seen = {}, list(roots), set()
+    while stack:
+        idx = stack.pop()
+        if idx in seen or not 0 <= idx < len(nodes):
+            continue
+        seen.add(idx)
+        node = nodes[idx]
+        if "mesh" in node:
+            counts[node["mesh"]] = counts.get(node["mesh"], 0) + 1
+        stack.extend(node.get("children", []))
+    return counts
+
+
+def gltf_stats(doc, binary=b""):
+    """Counts read straight from a glTF document (no Blender involved).
+
+    ``triangles`` and ``vertices`` multiply each mesh by the nodes that
+    instance it in the default scene; triangle strips/fans are counted as
+    ``n - 2``, lines and points as 0. ``images`` lists embedded images with
+    their pixel size, read from the bytes in the binary chunk.
+    """
+    accessors = doc.get("accessors", [])
+    instances = _mesh_instances(doc)
+    triangles = vertices = primitives = 0
+    for mesh_index, mesh in enumerate(doc.get("meshes", [])):
+        n = instances.get(mesh_index, 0)
+        for prim in mesh.get("primitives", []):
+            primitives += n
+            pos = prim.get("attributes", {}).get("POSITION")
+            vcount = accessors[pos]["count"] if pos is not None and pos < len(accessors) else 0
+            icount = accessors[prim["indices"]]["count"] if "indices" in prim else vcount
+            mode = prim.get("mode", 4)
+            if mode == 4:
+                tris = icount // 3
+            elif mode in (5, 6):
+                tris = max(icount - 2, 0)
+            else:
+                tris = 0
+            triangles += n * tris
+            vertices += n * vcount
+    images = []
+    views = doc.get("bufferViews", [])
+    for i, img in enumerate(doc.get("images", [])):
+        entry = {"index": i, "name": img.get("name"), "mime": img.get("mimeType"), "uri": img.get("uri")}
+        bv = img.get("bufferView")
+        if bv is not None and bv < len(views) and binary:
+            view = views[bv]
+            start = view.get("byteOffset", 0)
+            blob = binary[start:start + view["byteLength"]]
+            entry["bytes"] = len(blob)
+            size = image_size(blob)
+            if size:
+                entry["format"], entry["width"], entry["height"] = size
+        images.append(entry)
+    used = list(doc.get("extensionsUsed", []))
+    return {
+        "generator": doc.get("asset", {}).get("generator"),
+        "nodes": len(doc.get("nodes", [])),
+        "meshes": len(doc.get("meshes", [])),
+        "mesh_instances": sum(instances.values()),
+        "primitives": primitives,
+        "triangles": triangles,
+        "vertices": vertices,
+        "materials": len(doc.get("materials", [])),
+        "textures": len(doc.get("textures", [])),
+        "images": images,
+        "extensions_used": used,
+        "extensions_required": list(doc.get("extensionsRequired", [])),
+        "draco": "KHR_draco_mesh_compression" in used,
+    }
+
+
+def decimate_ratio(triangles, ratio=None, max_triangles=None):
+    """Collapse ratio to request, or None when no reduction is needed.
+
+    ``ratio`` must be in (0, 1]; ``max_triangles`` >= 1 gives
+    ``max_triangles / triangles`` when the mesh is over budget.
+    """
+    if ratio is not None and max_triangles is not None:
+        raise ValueError("use either a decimate ratio or a triangle budget, not both")
+    if ratio is not None:
+        ratio = float(ratio)
+        if not 0.0 < ratio <= 1.0:
+            raise ValueError(f"decimate ratio must be in (0, 1], got {ratio}")
+        return None if ratio >= 1.0 else ratio
+    if max_triangles is not None:
+        if int(max_triangles) < 1:
+            raise ValueError(f"triangle budget must be >= 1, got {max_triangles}")
+        if triangles <= max_triangles:
+            return None
+        return max_triangles / float(triangles)
+    return None
+
+
+def refine_ratio(ratio, achieved, target):
+    """Next collapse ratio when ``achieved`` triangles overshot ``target``.
+
+    Decimation is not exact (small meshes cannot shrink below a few
+    triangles), so the ratio is scaled by ``target / achieved`` with a 2%
+    safety margin.
+    """
+    if achieved <= target or achieved <= 0:
+        return ratio
+    return max(ratio * (target / float(achieved)) * 0.98, 1e-6)
+
+
+def fit_size(width, height, max_size):
+    """``(w, h)`` scaled so the larger side is at most ``max_size`` (aspect kept, >= 1)."""
+    width, height, max_size = int(width), int(height), int(max_size)
+    if max_size < 1:
+        raise ValueError(f"texture size must be >= 1, got {max_size}")
+    if max(width, height) <= max_size:
+        return width, height
+    scale = max_size / float(max(width, height))
+    return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
+
+
+def human_bytes(n):
+    """``1536`` -> ``'1.5 KB'``."""
+    n = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(n) < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} GB"  # pragma: no cover
+
+
+ROUNDTRIP_TOLERANCE = 1e-3  # fraction of the bounding-box diagonal / of the triangle count
+
+
+def roundtrip_checks(expected, measured, tolerance=ROUNDTRIP_TOLERANCE, label="glb"):
+    """Compare what was exported with what a fresh import measured.
+
+    ``expected`` and ``measured`` have ``triangles`` and ``bounds``
+    (``{"min": [x, y, z], "max": [x, y, z]}``, metres). Bounds may differ by
+    ``tolerance`` x the expected diagonal (plus 1e-5 m for float32 storage);
+    triangles by ``tolerance`` x the expected count (rounded down). Returns QA
+    checks in the same shape as the render reports.
+    """
+    checks = []
+    exp_t, got_t = int(expected["triangles"]), int(measured["triangles"])
+    allowed = int(tolerance * exp_t)
+    ok = abs(got_t - exp_t) <= allowed
+    checks.append(_check(f"{label}_triangles", "pass" if ok else "fail",
+                         f"{got_t} triangles re-imported, {exp_t} exported"
+                         + ("" if ok else f" (allowed difference {allowed})"),
+                         expected=exp_t, measured=got_t))
+    lo_e, hi_e = expected["bounds"]["min"], expected["bounds"]["max"]
+    lo_m, hi_m = measured["bounds"]["min"], measured["bounds"]["max"]
+    diag = math.sqrt(sum((h - l) ** 2 for l, h in zip(lo_e, hi_e)))
+    tol = tolerance * diag + 1e-5
+    worst = max(max(abs(a - b) for a, b in zip(lo_e, lo_m)), max(abs(a - b) for a, b in zip(hi_e, hi_m)))
+    ok = worst <= tol
+    checks.append(_check(f"{label}_bounds", "pass" if ok else "fail",
+                         f"bounds agree: largest difference {worst:.3g} m (tolerance {tol:.3g} m)" if ok else
+                         f"bounds differ by {worst:.4g} m (tolerance {tol:.3g} m): exported "
+                         f"{_fmt_box(lo_e, hi_e)}, re-imported {_fmt_box(lo_m, hi_m)}",
+                         expected=expected["bounds"], measured=measured["bounds"], difference=worst))
+    return checks
+
+
+def _fmt_box(lo, hi):
+    return "[" + ", ".join(f"{a:.4g}..{b:.4g}" for a, b in zip(lo, hi)) + "]"
+
+
+def export_exit_code(report):
+    """0 when every verification check passed, 3 when one failed."""
+    failed = any(c.get("status") == "fail" for c in report.get("verification", {}).get("checks", []))
+    return EXIT_CHECK_FAILED if failed else EXIT_OK
+
+
+def format_export_text(report):
+    """Short human summary of an export report."""
+    src, out = report["source"], report["export"]
+    size = report["bounds"]["size"]
+    lines = [
+        f"EXPORT {report['status'].upper()}  {os.path.basename(report['input'])}",
+        f"  triangles   {src['triangles']} -> {out['triangles']}"
+        + (f"  (decimate ratio {out['decimate_ratio']:.4g})" if out.get("decimate_ratio") else ""),
+        f"  vertices    {src['vertices']} -> {out['vertices']} (Blender count; glTF splits along seams)",
+        f"  area (m2)   {src.get('area', 0):.4g} -> {out.get('area', 0):.4g}",
+        f"  size (m)    {size[0]:.4g} x {size[1]:.4g} x {size[2]:.4g}  (X x Y x Z, Blender axes)",
+        f"  materials   {len(report['materials'])}, textures {len(report['textures'])}",
+    ]
+    for item in report["outputs"]:
+        lines.append(f"  {item['format']:<11} {item['path']}  {human_bytes(item['bytes'])}"
+                     + ("  draco" if item.get("draco") else ""))
+    for check in report.get("verification", {}).get("checks", []):
+        lines.append(f"  [{check['status'].upper():<4}] {check['id']:<16} {check['message']}")
+    for warning in report.get("warnings", []):
+        lines.append(f"  ! {warning}")
     return "\n".join(lines)
