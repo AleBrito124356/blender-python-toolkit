@@ -24,7 +24,7 @@ def test_animation_renders_every_frame_with_linear_keys(run_blender, tmp_path):
     assert positions[0] != positions[-1]  # the camera really orbits
 
 
-def test_video_mp4_has_every_frame(run_blender, tmp_path):
+def test_video_mp4_has_every_frame(run_blender, tmp_path, needs_ffmpeg):
     out = tmp_path / "tt"
     run = run_blender("product_turntable.py",
                       ["--frames", 6, "--render", "--video", "mp4", "--res", "96x96", "--samples", 1,
