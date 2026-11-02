@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install -e ".[test]"
+      - run: python -m pytest tests/unit -q
+
+  blender:
+    name: Headless Blender tests (pip install bpy, no Blender install)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"  # the bpy 5.x wheels are built for CPython 3.13
+          cache: pip
+      - name: System libraries for bpy and headless EEVEE / Workbench (software EGL via Mesa)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 \
+            libxkbcommon0 libxi6 libxrender1 libxfixes3 libxext6 libx11-6 libsm6 libice6 libvulkan1
+      - name: Install bpy in its own venv, the toolkit and pytest in the job's Python
+        run: |
+          python -m venv "$RUNNER_TEMP/bpy"
+          "$RUNNER_TEMP/bpy/bin/python" -m pip install "bpy>=5.2,<5.3"
+          echo "BLENDER_EXE=$RUNNER_TEMP/bpy/bin/python" >> "$GITHUB_ENV"
+          python -m pip install -e ".[test]"
+      - name: bpt doctor
+        run: python -m bpt doctor
+      - name: Blender integration tests (through bpt/blender_shim.py)
+        run: python -m pytest -m blender -q -ra
