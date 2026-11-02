@@ -1,9 +1,10 @@
 # blender-python-toolkit
 
-Headless Blender automation with Python: procedural scenes, product turntables, batch rendering, data-driven 3D charts and scene hygiene, all runnable from one command, EEVEE-first, and every render checked by numbers instead of by eye.
+Headless Blender automation with Python: web and AR export with a verified report, asset thumbnails, procedural scenes, product turntables, batch rendering, data-driven 3D charts and scene hygiene, all runnable from one command, EEVEE-first, with every render checked by numbers instead of by eye. It runs on a Blender install or on **no install at all** (`pip install bpy`), and speaks JSON with stable exit codes for CI jobs and AI agents.
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![Blender](https://img.shields.io/badge/Blender-5.2%20LTS%20tested-orange.svg)
+![bpy](https://img.shields.io/badge/pip%20install%20bpy-5.2%20LTS%20tested-orange.svg)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
 ![Renderer](https://img.shields.io/badge/renderer-EEVEE--first-brightgreen.svg)
 ![Tests](https://img.shields.io/badge/tests-unit%20%2B%20headless%20Blender-informational.svg)
@@ -14,37 +15,68 @@ Headless Blender automation with Python: procedural scenes, product turntables, 
 
 Opening Blender, clicking through menus, and re-doing the same setup for every render is fine once. It stops being fine when you need a turntable of 40 products, a chart rebuilt every time the numbers change, or the same scene pushed to three resolutions for review. Blender ships a full Python interpreter and runs **completely headless**, which turns each of those into a one-line command for a Makefile, a cron job or CI.
 
-Headless also means nobody looks at the output. So every rendering script can write a **JSON QA report** that says, with thresholds, whether the subject is cropped, floating, hidden or too small, and whether the image is black or blank. A CI job, a cron script or an AI agent without vision can reject a bad render on its own.
+Headless also means nobody looks at the output. So every rendering script can write a **JSON QA report** that says, with thresholds, whether the subject is cropped, floating, hidden or too small, and whether the image is black or blank, and the web export re-imports what it wrote to prove the file matches its report. A CI job, a cron script or an AI agent without vision can reject a bad result on its own: `bpt --json` prints one JSON object with the status, the outputs and the checks.
 
 ## What is inside
 
 | Command | Script | Does |
 | --- | --- | --- |
 | `bpt city` | `scripts/procedural_city.py` | Seeded city at dusk: full-size buildings on the ground, a window grid on all four walls with per-window lighting, a physical dusk sky, camera fitted to the skyline |
-| `bpt turntable` | `scripts/product_turntable.py` | Import a model (.glb/.gltf/.obj/.fbx/.stl/.ply) or use the demo bottle, rest it on the floor, 3-point rig that orbits with the camera; PNG frames, a still, or an MP4 |
+| `bpt export` | `scripts/export_web.py` | A .blend or a model to a web/AR `.glb` (and `.usdz`): decimation to a triangle budget, texture downscaling, Draco when the build has it; JSON report and a round-trip check of every file |
+| `bpt thumbnails` | `scripts/thumbnails.py` | A folder of models and .blend files to square PNG thumbnails with identical framing and lighting, a labelled contact sheet and `index.json`; broken files are reported and skipped |
+| `bpt turntable` | `scripts/product_turntable.py` | Import a model (.glb/.gltf/.obj/.fbx/.stl/.ply/.usd*) or use the demo bottle, rest it on the floor, 3-point rig that orbits with the camera; PNG frames, a still, or an MP4 |
 | `bpt bars` | `scripts/csv_to_bars3d.py` | CSV to an honest 3D bar chart: zero baseline, gridlines, labels in front, negative values, optional animated grow-in to MP4 |
 | `bpt materials` | `scripts/material_library.py` | A `.blend` of 8 procedural PBR materials (fake users, ready to Append) and a contact-sheet preview |
 | `bpt batch` | `scripts/batch_render.py` | Render every `.blend` in a folder with overrides; `summary.json`/`summary.csv`; exit code 1 when anything fails |
 | `bpt presets` | `scripts/render_presets.py` | Apply validated `preview` / `social` / `print` presets from `presets.yaml`, then save and/or render |
 | `bpt cleanup` | `scripts/cleanup_scene.py` | Purge orphans, apply transforms, bake mirrored scales with correct normals, collision-free type-prefix renames; dry-run by default |
 | `bpt inspect` | `scripts/inspect_render.py` | QA report for any `.blend` and rendered image |
-| `bpt doctor` | `bpt/cli.py` | Shows which Blender, engines, GPU backends, FFmpeg, numpy and PyYAML the toolkit will use |
+| `bpt doctor` | `bpt/cli.py` | Shows which runtime (Blender or bpy module), engines, GPU backends, FFmpeg, glTF/Draco/USD export, libEGL, numpy and PyYAML the toolkit will use |
 
-Shared code: `lib/core.py` (pure Python: parsing, chart layout, preset validation, QA rules; unit-tested without Blender), `lib/common.py` (version-aware `bpy` helpers), `lib/qa.py` (in-Blender measurements for the QA reports).
+Shared code: `lib/core.py` (pure Python: parsing, chart layout, preset validation, QA rules, GLB reading, exit codes; unit-tested without Blender), `lib/common.py` (version-aware `bpy` helpers), `lib/studio.py` (model import, normalisation and the studio light rig shared by the turntable and thumbnails), `lib/qa.py` (in-Blender measurements for the QA reports). `skills/blender-toolkit/SKILL.md` teaches an AI agent to drive all of it.
 
 ## Quickstart
 
-You need [Blender](https://www.blender.org/download/) (tested on **5.2.1 LTS**) and any Python 3.9+ for the launcher.
+Two ways to get a runtime; `bpt` works the same with both.
+
+**A. No Blender install: Blender as a Python module.** The [`bpy`](https://pypi.org/project/bpy/) package on PyPI is all of Blender (EEVEE, Cycles, Workbench, the importers and exporters) as a module. bpy 5.x needs **Python 3.13**:
 
 ```bash
 git clone https://github.com/AleBrito124356/blender-python-toolkit.git
 cd blender-python-toolkit
+python3.13 -m venv .venv
+.venv/bin/python -m pip install bpy -e .        # Windows: .venv\Scripts\python -m pip install bpy -e .
+.venv/bin/bpt doctor
+```
+
+On a Linux server or container, EEVEE and Workbench still need libEGL to render without a display (Mesa renders in software): `sudo apt-get install libegl1 libgl1-mesa-dri`. Cycles renders without it.
+
+**B. A Blender install.** You need [Blender](https://www.blender.org/download/) (5.2 LTS tested) and any Python 3.9+ for the launcher:
+
+```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -e .      # Windows; on macOS/Linux: .venv/bin/python -m pip install -e .
 bpt doctor                                     # or, without installing: python -m bpt doctor (from the repo root)
 ```
 
-`bpt doctor` on the machine this was developed on:
+`bpt doctor` with the bpy module (Ubuntu 24.04 container, software EGL):
+
+```
+  Blender          5.2.3 LTS  (bpy module in /home/user/.venvs/bpyenv/bin/python, via BLENDER_EXE)
+  Runtime          Python interpreter + bpy module (no Blender install needed)
+  Python           3.13.18 (the interpreter that imports bpy)
+  Engines          BLENDER_EEVEE, BLENDER_WORKBENCH, CYCLES
+  Cycles GPU       none found -> Cycles renders on the CPU (EEVEE is unaffected)
+  Video output     FFmpeg built in: --video mp4/mkv/webm works
+  Export           glTF yes; Draco no (encoder library missing from this build: --draco is refused); USD/USDZ yes
+  EGL (Linux)      libEGL.so.1 -> EEVEE and Workbench can render headless
+  numpy            2.5.4 -> render QA (--report) available
+  PyYAML           not installed -> presets use the built-in parser (fine). Optional: "/home/user/.venvs/bpyenv/bin/python" -m pip install pyyaml
+  ffprobe on PATH  /usr/bin/ffprobe
+  bpt              0.3.0 (scripts in /home/user/blender-python-toolkit/scripts)
+```
+
+and with Blender 5.2.1 on Windows (0.2.0, before the export and EGL rows existed):
 
 ```
   Blender          5.2.1 LTS  (C:\Program Files\Blender Foundation\Blender 5.2\blender.exe, via install)
@@ -54,11 +86,9 @@ bpt doctor                                     # or, without installing: python 
   Video output     FFmpeg built in: --video mp4/mkv/webm works
   numpy            2.3.4 -> render QA (--report) available
   PyYAML           not installed -> presets use the built-in parser (fine). Optional: "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe" -m pip install pyyaml
-  ffprobe on PATH  C:\...\ffmpeg-8.1-essentials_build\bin\ffprobe.EXE
-  bpt              0.2.0 (scripts in C:\...\blender-python-toolkit\scripts)
 ```
 
-Blender is found in this order: `--blender PATH`, the `BLENDER_EXE` environment variable, `blender` on `PATH`, then the newest version in the usual install folders (`Program Files\Blender Foundation\Blender X.Y`, Steam, `/Applications/Blender*.app`, `/opt/blender*`, snap, flatpak).
+The runtime is found in this order: `--blender PATH` and the `BLENDER_EXE` environment variable (each may name a Blender executable **or** a Python interpreter that can import bpy; the kind is read from the file name, or from `PATH --version` when the name does not say), `blender` on `PATH`, the newest version in the usual install folders (`Program Files\Blender Foundation\Blender X.Y`, Steam, `/Applications/Blender*.app`, `/opt/blender*`, snap, flatpak), then `BLENDER_PYTHON`, then the interpreter running `bpt` if it can import bpy.
 
 Render something:
 
@@ -67,10 +97,16 @@ bpt turntable --still --render --report out/turntable.qa.json
 # -> out/turntable/beauty.png and a QA report
 ```
 
-`bpt` only launches Blender. `bpt --dry-run city --blocks 6 --render` prints the exact command it would run:
+`bpt` only launches Blender. `bpt --dry-run city --blocks 6 --render` prints the exact command it would run. With a Blender executable:
 
 ```
 "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python-exit-code 1 --python C:\...\scripts\procedural_city.py -- --blocks 6 --render
+```
+
+with a bpy interpreter, the same arguments go through `bpt/blender_shim.py`:
+
+```
+/home/user/.venvs/bpyenv/bin/python /home/user/blender-python-toolkit/bpt/blender_shim.py --background --factory-startup --python-exit-code 1 --python /home/user/blender-python-toolkit/scripts/procedural_city.py -- --blocks 6 --render
 ```
 
 ## How headless Blender works (and the three flags that matter)
@@ -94,14 +130,16 @@ blender --background --python scripts/procedural_city.py -- --blocks 6 --seed 7 
 
 **Why there is no `--cycles` flag.** Blender's Cycles add-on *also* reads the arguments after `--` with its own `argparse` parser, which knows `--cycles-device` and `--cycles-print-stats` and accepts abbreviations. A script flag named `--cycles` is an ambiguous abbreviation to it, so Blender exits with code 2 (`ambiguous option: --cycles could match --cycles-print-stats, --cycles-device`) before the script starts. The toolkit uses `--engine cycles` and `--device gpu|cpu` instead. (A test documents this Blender behaviour.)
 
+**Without a Blender executable.** A Python interpreter that imports `bpy` has no command line of its own, so `bpt/blender_shim.py` gives it Blender's: `python bpt/blender_shim.py <the same arguments as blender>`. It processes the arguments in order like Blender (a `.blend` path opens the file without running scripts embedded in it, `--python FILE` runs a script as `__main__`, `--python-expr` runs a string), resets to factory settings for `--factory-startup`, sets `sys.argv` to the same list *before* `import bpy` (Blender's Cycles add-on parses the arguments after `--` when it registers, in the module as in Blender, so even the `--cycles` trap above behaves identically), exits with the `--python-exit-code` on an uncaught exception, passes `sys.exit(n)` through, and fails with exit code 1 when a `.blend` cannot be opened. Blender's render flags (`-f`, `-a`, `-o`, ...) are not emulated and are rejected with a message; the toolkit's scripts render through `bpy.ops.render.render`. `tests/blender/test_runtime.py` pins this contract and runs against either runtime.
+
 **EEVEE vs Cycles.**
 
-- **EEVEE (default)**: rasterised, fast, stable in background mode. The right choice for turntables, chart rebuilds, look-dev and CI.
+- **EEVEE (default)**: rasterised, fast, stable in background mode. The right choice for turntables, chart rebuilds, look-dev and CI. On a machine without a GPU (software EGL, as in most containers) it compiles each new material's shaders on the CPU, roughly 5-10 s per material and up to ~40 s for the first render of a process; Workbench (`bpt thumbnails --engine workbench`) and Cycles at low samples are much faster there.
 - **Cycles (`--engine cycles`)**: path traced, slower. With `--device gpu` (the default) the toolkit tries OptiX, CUDA, HIP, oneAPI and Metal in that order and falls back to the CPU with a message when none works; `--device cpu` skips the GPU.
 
 ## Usage
 
-Every example uses `bpt`; the raw Blender form is `blender --background --factory-startup --python-exit-code 1 --python scripts/<script>.py -- <same flags>`. The four generators (`city`, `turntable`, `bars`, `materials`) share `--res WxH`, `--samples N`, `--engine eevee|cycles`, `--device gpu|cpu`, `--report PATH` and `--qa-strict`; `batch` takes `--resolution`, `--samples`, `--engine`, `--device` and writes its QA into `summary.json`; `presets` and `inspect` also take `--report` / `--qa-strict`. Every script answers `--help` (`bpt city --help`).
+Every example uses `bpt`; the raw Blender form is `blender --background --factory-startup --python-exit-code 1 --python scripts/<script>.py -- <same flags>` (or `python bpt/blender_shim.py` and the same arguments with a bpy interpreter). The four generators (`city`, `turntable`, `bars`, `materials`) share `--res WxH`, `--samples N`, `--engine eevee|cycles`, `--device gpu|cpu`, `--report PATH` and `--qa-strict`; `batch` takes `--resolution`, `--samples`, `--engine`, `--device` and writes its QA into `summary.json`; `presets` and `inspect` also take `--report` / `--qa-strict`; `export` always writes its report and checks its files; `thumbnails` checks every image it renders. Every script answers `--help` (`bpt city --help`).
 
 ### Procedural city
 
@@ -220,6 +258,58 @@ objects renamed         : 4
 ```
 Purges orphan datablocks, applies transforms on single-user meshes, bakes mirrored (negative) scales into the mesh with outward normals, and renames objects with a type prefix (`MESH_`, `CAM_`, `LGT_`, ...) without name collisions. Mirrored objects that share their mesh are reported and left alone, because baking would flip the other users too. It **never overwrites the input**: the result goes to `<name>_clean.blend` (or `--output`).
 
+### Web and AR export
+
+```bash
+bpt export --input chair.blend --max-triangles 50000 --texture-max 1024 --usdz
+bpt export --input scan.obj --decimate 0.25 --image-format webp --output out/web/scan.glb
+bpt export --input part.fbx --draco 7          # only with a Blender build that ships the Draco library
+```
+```
+[export] 2 object(s) to export from ...\product.blend
+[export] decimated with ratio 0.3237: 9268 -> 2998 triangles
+[export] texture Checker: 512x256 -> 128x64
+EXPORT OK  product.blend
+  triangles   9268 -> 2998  (decimate ratio 0.3237)
+  vertices    4770 -> 1507 (Blender count; glTF splits along seams)
+  area (m2)   3.746 -> 3.722
+  size (m)    0.9945 x 1.297 x 1.02  (X x Y x Z, Blender axes)
+  materials   1, textures 1
+  glb         ...\out\product.glb  270.0 KB
+  usdz        ...\out\product.usdz  159.7 KB
+  [PASS] glb_file_triangles the file declares 2998 triangles, 2998 exported
+  [PASS] glb_textures     1 embedded texture(s), none larger than 128px
+  [PASS] glb_triangles    2998 triangles re-imported, 2998 exported
+  [PASS] glb_bounds       bounds agree: largest difference 0 m (tolerance 0.00194 m)
+  [PASS] usdz_triangles   2998 triangles re-imported, 2998 exported
+  [PASS] usdz_bounds      bounds agree: largest difference 0 m (tolerance 0.00194 m)
+  ! converted 1 curve/text/surface object(s) to meshes: Label
+```
+The input is a `.blend` or any model this Blender can import (`.glb .gltf .obj .fbx .stl .ply .usd .usda .usdc .usdz`). Every geometry object that renders is exported, except objects tagged `qa_role` = `backdrop` or `ignore` (the floors and cycloramas this toolkit builds); cameras and lights are not. The `.glb` is glTF 2.0 with +Y up and modifiers applied (`--no-apply-modifiers` exports base meshes); `--usdz` adds a USD archive with UsdPreviewSurface materials, the format of Apple's AR Quick Look. `--max-triangles N` decimates every mesh with one collapse ratio until the export fits (`--decimate RATIO` sets the ratio); a Weld modifier runs first, because imported meshes are split at every UV seam and decimating them otherwise deletes whole triangles (the report's surface area shows it: 3.746 -> 3.722 m² here). `--texture-max 1024` downscales larger textures with their aspect ratio kept; `--image-format jpeg|webp` re-encodes them.
+
+The report (`<output>.export.json`) holds triangles, vertices and surface area before and after, the decimation ratio, file sizes, world bounds in metres, materials, every texture with its source and exported size, timings and warnings. Then each file is **verified**: re-imported into an empty scene, its triangle count and bounds must match the report (tolerance `--tolerance`, 0.1% of the bounding-box diagonal and of the triangle count), and the `.glb` is read byte by byte, without Blender, for its declared triangles, the Draco extension and the pixel size of every embedded texture. Any mismatch exits with **code 3**. Two of those checks exist because Blender fails silently: its glTF exporter writes an uncompressed file when the Draco library is missing (the PyPI `bpy` 5.2 wheel ships without it, so there `--draco` is refused with exit code 2 and the message says why), and it re-reads the original image file when a texture was only resized in memory (the toolkit writes resized textures as new images, and the check reads their size back from the `.glb`). Bounds are reported in Blender's axes (Z up); the files store the same extents as +Y up. glTF stores Blender units as metres, so a scene with a unit scale other than 1 gets a warning.
+
+### Asset thumbnails
+
+```bash
+bpt thumbnails --input assets --output out/thumbnails --size 256
+bpt thumbnails --input assets --engine workbench --background "#20242a" --strict    # fast, solid background
+```
+```
+[thumbnails] 7 file(s) -> ...\out\thumbnails (192px, eevee)
+[thumbnails] OK        bottle.blend  (2.6s)  ...\bottle.png
+[thumbnails] ERROR     broken.glb  (0.1s)  broken.glb: the .glb importer failed: Error: Bad glTF: json error: ...
+[thumbnails] OK        city.blend  (1.6s)  ...\city.png
+...
+[thumbnails] 6/7 ok, 1 error, 0 qa_failed
+```
+
+![Contact sheet written by bpt thumbnails: a bottle, a broken file marked ERROR, a city, a material row, a bar chart, Suzanne and a torus](docs/gallery/thumbnails.jpg)
+
+Every file is opened on its own (a fresh empty scene for a model, the file itself for a `.blend`), scaled into a 2-unit box like the turntable, lit by the turntable's key / fill / rim rig turned to the camera azimuth, and framed by fitting every evaluated vertex into the square with the same margin, so assets of any size line up. A `.blend` keeps its materials but not its own lights, camera or backdrops. `--engine` is `eevee` (default), `workbench` (flat studio light, fastest; on a machine without a GPU it renders in well under a second where EEVEE spends seconds compiling shaders) or `cycles`; `--background` is `transparent` (default) or a colour, composited over the transparent render so the lighting is identical either way. `--azimuth`, `--elevation` and `--margin` change the view, `--recursive` scans subfolders.
+
+`index.json` lists every file with its thumbnail, `status` (`ok`, `error` when it could not be imported or rendered, `qa_failed` when the image is empty, black or flat), the error message, bounds in the file's units, triangle / vertex / object counts, textures whose files are missing (they render magenta), its contact-sheet cell and the seconds it took. A broken file never stops the batch; `--strict` makes any failure exit with code 1. `contact_sheet.png` labels each cell with the file name (a built-in 5x7 bitmap font, no font files needed).
+
 ## Checking renders without looking at them
 
 Add `--report out/x.qa.json` to any rendering script (and `--qa-strict` to make a failed check exit with code 3), or audit any existing file:
@@ -261,30 +351,67 @@ The JSON report holds the same checks plus the numbers behind them: scene facts 
 
 **Object roles.** The toolkit's scripts tag what they build with a `qa_role` custom property: `subject` (must be in frame and rest on the ground), `annotation` (labels and titles: in frame, may float, must not be hidden), `backdrop` (floors, panels, cycloramas: ignored) or `ignore`. Untagged files get defaults: the largest flat mesh at the bottom is the ground, text objects are annotations, everything else is a subject. `lib.common.tag_role(obj, "annotation")` tags your own objects; `bpt inspect --ground-z Z` or `--no-ground-check` override the ground.
 
+## For CI and AI agents: `--json`
+
+Put `--json` before the command and stdout carries exactly one JSON object; everything Blender and the script print goes to stderr:
+
+```bash
+bpt --json export --input suzanne.glb --output out/suzanne_web.glb --max-triangles 500
+```
+```json
+{
+  "tool": "bpt",
+  "bpt_version": "0.3.0",
+  "command": "export",
+  "status": "ok",
+  "exit_code": 0,
+  "seconds": 1.067,
+  "runtime": {"kind": "python", "path": "/home/user/.venvs/bpyenv/bin/python", "source": "BLENDER_EXE"},
+  "argv": ["/home/user/.venvs/bpyenv/bin/python", ".../bpt/blender_shim.py", "--background", "..."],
+  "summary": {
+    "script": "export_web",
+    "status": "ok",
+    "outputs": [".../out/suzanne_web.glb", ".../out/suzanne_web.export.json"],
+    "report": ".../out/suzanne_web.export.json",
+    "export": {"source": {"triangles": 968, "...": "..."}, "export": {"triangles": 498, "...": "..."},
+               "verification": {"passed": true, "checks": ["..."]}, "...": "..."}
+  }
+}
+```
+
+`summary` is written by the script itself (to the file named by `$BPT_SUMMARY`, which `bpt` sets): `outputs` (absolute paths) and a condensed `qa` (`passed`, the `failing` check ids, one line per check) for every rendering command; per-file `results` with status, output, error and QA for `batch`; per-file `items` for `thumbnails`; the whole export report for `export`. It is `null` if the script died before writing it. When the exit code is not 0, `log_tail` carries the last 40 log lines. `bpt --json --dry-run ...` prints the command as JSON, `bpt --json doctor` the runtime. Your own scripts can feed it with `lib.core.write_summary({...})`.
+
+`skills/blender-toolkit/SKILL.md` is an Agent Skill (YAML front matter with `name` and `description`, then instructions) that teaches an AI agent when to use each command, how to read these objects and what to do about EGL in a Linux container.
+
 ## Exit codes
 
-| Code | Meaning |
-| --- | --- |
-| 0 | success |
-| 1 | a Python error (with `--python-exit-code 1`), bad input such as a missing file, or a batch with failed files |
-| 2 | invalid command-line flags (argparse), `--strict-csv` with skipped rows, or Blender rejecting its own arguments |
-| 3 | `--qa-strict` and at least one QA check failed |
+The same in every script and in `bpt --json` (`status`):
+
+| Code | `status` | Meaning |
+| --- | --- | --- |
+| 0 | `ok` | success (QA problems are reported but only fail with `--qa-strict`) |
+| 1 | `failed` | a Python or Blender error (with `--python-exit-code 1`), a `batch` with failed files, `thumbnails --strict` with failed files |
+| 2 | `invalid_input` | invalid flags (argparse), a missing or unreadable input file or folder, an unsupported model, an invalid preset file, `--strict-csv` with skipped rows, a request this build cannot do (`export --draco` without the Draco library, `--usdz` without USD), or Blender rejecting its own arguments |
+| 3 | `check_failed` | outputs were written but a check failed: `--qa-strict` QA, or the export round trip |
 
 ## Tests
 
 ```bash
-.venv/Scripts/python -m pip install -r requirements.txt -e .
-.venv/Scripts/python -m pytest tests/unit          # 167 tests, no Blender needed, a few seconds
-.venv/Scripts/python -m pytest -m blender          # runs every script in a headless Blender (~4 min)
+.venv/bin/python -m pip install -r requirements.txt -e .
+.venv/bin/python -m pytest tests/unit          # 265 tests, no Blender needed, under a second
+.venv/bin/python -m pytest -m blender          # runs every script in a headless Blender (78 tests, ~3-4 min)
+BLENDER_EXE=/path/to/bpy-venv/bin/python .venv/bin/python -m pytest -m blender   # the same suite on pip install bpy
 ```
 
-The integration tests generate their `.blend` / `.glb` fixtures at test time, run each script with `--background --factory-startup --python-exit-code 1` at tiny resolutions, and measure the results with Blender's own APIs: floor contact of buildings, bars and a rotated `.glb`, full building dimensions, a window grid on all four walls (rendered and profiled), bar height ratios, label positions, framing at the default resolutions, linear turntable keys, MP4 frame counts, batch exit codes and summaries, preset saving, outward normals after cleanup, and the QA verdict on good and broken scenes. They skip cleanly when no Blender is found (`BLENDER_EXE` overrides discovery).
+The integration tests generate their `.blend` / `.glb` / `.obj` / `.stl` fixtures at test time, run each script with `--background --factory-startup --python-exit-code 1` at tiny resolutions, and measure the results with Blender's own APIs: floor contact of buildings, bars and a rotated `.glb`, full building dimensions, a window grid on all four walls (rendered and profiled), bar height ratios, label positions, framing at the default resolutions, linear turntable keys, MP4 frame counts, batch exit codes and summaries, preset saving, outward normals after cleanup, the QA verdict on good and broken scenes, export reports read back from the `.glb` bytes, a decimation that keeps the surface, a round trip that disagrees (exit 3), thumbnails framed with a margin, `--json` objects for batch / inspect / export, exit code 2 for a missing input in every command, and the runtime contract itself (`sys.argv`, `__main__`, exit codes, `.blend` loading). They run against a Blender executable or a bpy interpreter, skip video tests when the build has no FFmpeg, and skip entirely when no runtime is found (`BLENDER_EXE` overrides discovery).
+
+CI (`.github/workflows/ci.yml`) runs the unit tests on Python 3.9 and 3.13 and the integration suite on `pip install bpy` with libEGL on Ubuntu.
 
 `make test`, `make city`, `make bars` and friends exist for people who have `make`; each target is a single `python -m bpt ...` line.
 
 ## Compatibility
 
-Tested on **Blender 5.2.1 LTS** (Windows 11; EEVEE, and Cycles on the CPU). The helpers keep the version branches for older releases: `BLENDER_EEVEE_NEXT` on 4.2-4.4, legacy `Action.fcurves` before layered actions, `NISHITA` / Hosek-Wilkie skies, pre-4.0 Principled BSDF socket names, Filmic before AgX, and no `media_type` before 5.0. Those branches are kept on purpose for 3.6-4.x but are **not exercised by this repository's tests**, so treat them as best effort.
+0.3.0 is tested on **`bpy` 5.2.3 LTS from PyPI** (Python 3.13, Ubuntu 24.04; EEVEE and Workbench through Mesa's software EGL, Cycles on the CPU). 0.2.0 was tested on **Blender 5.2.1 LTS** (Windows 11; EEVEE, and Cycles on the CPU); the code added in 0.3.0 has not been run on a Blender executable yet, only through the shim, which emulates its command line and is held to it by `tests/blender/test_runtime.py`. What the PyPI wheel 5.2.3 has: EEVEE, Workbench, Cycles (CPU), FFmpeg (MP4/MKV/WebM), the glTF and FBX add-ons, OBJ/STL/PLY/USD import and export including `.usdz`; what it lacks: the Draco and meshoptimizer libraries of the glTF add-on (`--draco` is refused), and GPU backends in a container without drivers. The helpers keep the version branches for older releases: `BLENDER_EEVEE_NEXT` on 4.2-4.4, legacy `Action.fcurves` before layered actions, `NISHITA` / Hosek-Wilkie skies, pre-4.0 Principled BSDF socket names, Filmic before AgX, and no `media_type` before 5.0. Those branches are kept on purpose for 3.6-4.x but are **not exercised by this repository's tests**, so treat them as best effort.
 
 ## Gallery
 
@@ -305,7 +432,9 @@ Version 0.1 (left) against 0.2 (right) with the same seed, CSV and resolution: f
 
 ```
 blender-python-toolkit/
-├── bpt/                        # launcher: discovery, doctor, one sub-command per script
+├── .github/workflows/ci.yml    # unit tests (3.9, 3.13) + integration tests on pip install bpy
+├── bpt/                        # launcher: discovery, doctor, --json, one sub-command per script
+│   └── blender_shim.py         # Blender's command line for a Python that imports bpy
 ├── scripts/
 │   ├── procedural_city.py      # seeded city at dusk
 │   ├── product_turntable.py    # 3-point rig + orbit camera, PNG / still / MP4
@@ -314,11 +443,15 @@ blender-python-toolkit/
 │   ├── material_library.py     # 8 procedural PBR materials -> .blend
 │   ├── cleanup_scene.py        # scene hygiene, dry-run by default
 │   ├── render_presets.py       # preview / social / print presets
-│   └── inspect_render.py       # QA report for any .blend / image
+│   ├── inspect_render.py       # QA report for any .blend / image
+│   ├── export_web.py           # .blend / model -> verified .glb (+ .usdz) for the web and AR
+│   └── thumbnails.py           # folder -> PNG thumbnails, contact sheet, index.json
 ├── lib/
 │   ├── core.py                 # pure Python, unit tested without Blender
 │   ├── common.py               # version-aware bpy helpers (imported by every script)
+│   ├── studio.py               # model import, normalisation, 3-point rig (turntable, thumbnails)
 │   └── qa.py                   # in-Blender measurements for QA reports
+├── skills/blender-toolkit/     # SKILL.md: an Agent Skill for driving bpt
 ├── tests/
 │   ├── unit/                   # system Python, no Blender
 │   └── blender/                # headless Blender integration tests, probes, fixture generator
@@ -367,7 +500,7 @@ if __name__ == "__main__":
     main()
 ```
 
-`lib/common.py` also gives you `action_fcurves` (layered actions), `set_image_output` / `set_video_output` (media-type safe), `configure_sky`, `mesh_world_bounds`, `frame_points`, `set_engine`, `look_at`, colour helpers and more, all headless-safe.
+`lib/common.py` also gives you `action_fcurves` (layered actions), `set_image_output` / `set_video_output` (media-type safe), `configure_sky`, `mesh_world_bounds`, `mesh_stats`, `frame_points`, `set_engine` (EEVEE, Cycles, Workbench), `look_at`, colour helpers and more, all headless-safe; `lib/studio.py` imports any supported model and lights it like the turntable. `run_qa` also writes the `bpt --json` summary; for anything else call `lib.core.write_summary({"outputs": [...], ...})`, and exit with `lib.core.fail_input(message)` (code 2) when the input is wrong.
 
 ## Related projects
 
